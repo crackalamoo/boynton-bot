@@ -35,7 +35,8 @@ def chat():
 
 @app.route("/api/history", methods=["GET"])
 def get_history():
-    return jsonify(agent.get_history("web"))
+    data = agent.get_history("web")
+    return jsonify(data)
 
 
 @app.route("/api/clear", methods=["POST"])

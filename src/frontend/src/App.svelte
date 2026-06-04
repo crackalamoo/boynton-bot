@@ -21,7 +21,21 @@
       const res = await fetch('/api/history');
       if (res.ok) {
         const history = await res.json();
-        messages = history.map((m) => ({ type: m.role, content: m.content }));
+        const mapped = history.messages.map((m) => ({ type: m.role, content: m.content }));
+        if (history.summary_created_at) {
+          const cutoff = new Date(history.summary_created_at);
+          // Find the last message whose created_at is <= summary_created_at
+          let insertAfter = -1;
+          for (let i = 0; i < history.messages.length; i++) {
+            if (new Date(history.messages[i].created_at) <= cutoff) {
+              insertAfter = i;
+            }
+          }
+          if (insertAfter >= 0) {
+            mapped.splice(insertAfter + 1, 0, { type: 'divider' });
+          }
+        }
+        messages = mapped;
         scrollToBottom();
       }
     } catch (_) {}

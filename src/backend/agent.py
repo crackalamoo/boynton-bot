@@ -39,14 +39,35 @@ def _complete(client, messages):
 
 
 class Agent:
-    def get_history(self, channel: str) -> list:
+    def get_history(self, channel: str) -> dict:
         with pool.connection() as conn:
             with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute("SELECT summary_created_at FROM sessions WHERE id = %s", (channel,))
+                session = cur.fetchone()
+                if session is None:
+                    return {"messages": [], "summary_created_at": None}
+
+                summary_created_at = session["summary_created_at"]
+
                 cur.execute(
-                    "SELECT role, content FROM messages WHERE session_id = %s ORDER BY created_at ASC",
+                    "SELECT role, content, created_at FROM messages WHERE session_id = %s ORDER BY created_at ASC",
                     (channel,)
                 )
-                return cur.fetchall()
+                rows = cur.fetchall()
+
+                messages = [
+                    {
+                        "role": r["role"],
+                        "content": r["content"],
+                        "created_at": r["created_at"].isoformat(),
+                    }
+                    for r in rows
+                ]
+
+                return {
+                    "messages": messages,
+                    "summary_created_at": summary_created_at.isoformat() if summary_created_at else None,
+                }
 
     def clear(self, channel: str):
         with pool.connection() as conn:
