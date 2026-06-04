@@ -13,5 +13,11 @@ frontend/node_modules/
 # Editors
 .vscode/
 
+# OS-specific Makefile not checked in
+Makefile
+
+# Logs
+*.log
+
 # macOS
 .DS_Store
