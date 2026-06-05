@@ -1,15 +1,13 @@
 <script>
   import { onMount, tick } from 'svelte';
-  import { marked } from 'marked';
+  import MessageList from './components/MessageList.svelte';
+  import ChatInput from './components/ChatInput.svelte';
+  import { parseHistory } from './lib/messageHistory.js';
 
-  marked.setOptions({ breaks: true });
+  const isMobile = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches;
 
   let messages = $state([]);
-  let inputValue = $state('');
   let sending = $state(false);
-  let textareaEl = $state(null);
-  let messagesEl = $state(null);
-  const isMobile = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches;
 
   async function scrollToBottom(behavior = 'instant') {
     await tick();
@@ -20,70 +18,15 @@
     try {
       const res = await fetch('/api/history');
       if (res.ok) {
-        const history = await res.json();
-        const mapped = [];
-        let dividerInsertAfter = -1;
-        const cutoff = history.summary_created_at ? new Date(history.summary_created_at) : null;
-
-        function ensureAssistant() {
-          const last = mapped[mapped.length - 1];
-          if (last?.type === 'assistant') return last;
-          const msg = { type: 'assistant', parts: [] };
-          mapped.push(msg);
-          return msg;
-        }
-
-        for (const m of history.messages) {
-          if (m.role === 'user') {
-            mapped.push({ type: 'user', content: m.content });
-          } else if (m.role === 'assistant') {
-            const asst = ensureAssistant();
-            if (m.content) asst.parts.push({ kind: 'text', content: m.content });
-          } else if (m.role === 'tool_call') {
-            const asst = ensureAssistant();
-            asst.parts.push({ kind: 'tool_call', name: m.tool_name, arguments: m.arguments ?? {}, result: null });
-          } else if (m.role === 'tool_result') {
-            const asst = ensureAssistant();
-            const pending = asst.parts.findLastIndex((p) => p.kind === 'tool_call' && p.result === null);
-            if (pending !== -1) asst.parts[pending] = { ...asst.parts[pending], result: m.content };
-          }
-          if (cutoff && new Date(m.created_at) <= cutoff) {
-            dividerInsertAfter = mapped.length - 1;
-          }
-        }
-
-        if (dividerInsertAfter >= 0) {
-          mapped.splice(dividerInsertAfter + 1, 0, { type: 'divider' });
-        }
-        messages = mapped;
+        messages = parseHistory(await res.json());
         scrollToBottom();
       }
     } catch (_) {}
   });
 
-  function autoResize(node) {
-    function resize() {
-      node.style.height = 'auto';
-      node.style.height = node.scrollHeight + 'px';
-    }
-    node.addEventListener('input', resize);
-    return {
-      destroy() {
-        node.removeEventListener('input', resize);
-      },
-    };
-  }
-
-  async function sendMessage() {
-    const message = inputValue.trim();
-    if (!message || sending) return;
-
-    inputValue = '';
-    if (textareaEl) textareaEl.style.height = 'auto';
+  async function sendMessage(message) {
     sending = true;
-
     messages = [...messages, { type: 'user', content: message }];
-
     const assistantIndex = messages.length;
     messages = [...messages, { type: 'assistant', parts: [] }];
     scrollToBottom();
@@ -105,7 +48,6 @@
           i === assistantIndex ? { ...m, parts: [{ kind: 'text', content: errMsg }] } : m
         );
         sending = false;
-        textareaEl?.focus();
         return;
       }
 
@@ -183,18 +125,6 @@
     }
 
     sending = false;
-    if (isMobile) {
-      textareaEl?.blur();
-    } else {
-      textareaEl?.focus();
-    }
-  }
-
-  function handleKeydown(e) {
-    if (!isMobile && e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      sendMessage();
-    }
   }
 
   async function clearConversation() {
@@ -207,298 +137,7 @@
   <article>
     <h1>Boynton Bot</h1>
     <hr />
-
-    <div id="messages" bind:this={messagesEl}>
-      {#each messages as msg}
-        {#if msg.type === 'divider'}
-          <div class="summary-notice">— conversation summarized —</div>
-        {:else}
-          <div class="msg {msg.type}">
-            <div class="msg-label">{msg.type === 'user' ? 'you' : 'boynton bot'}</div>
-            {#if msg.type === 'assistant'}
-              {#if !msg.parts || msg.parts.length === 0}
-                <div class="thinking">thinking…</div>
-              {:else}
-                {#each msg.parts as part}
-                  {#if part.kind === 'text'}
-                    <div class="msg-content markdown">{@html marked(part.content)}</div>
-                  {:else if part.kind === 'tool_call'}
-                    <details class="tool-call">
-                      <summary class="tool-call-header">
-                        <span class="tool-call-status">{part.result === null ? 'Using' : 'Used'}</span>
-                        {part.name.replaceAll('_', ' ')}
-                      </summary>
-                      {#if part.result !== null}
-                        {#if part.arguments && Object.keys(part.arguments).length > 0}
-                          <pre class="tool-call-args">{JSON.stringify(part.arguments, null, 2)}</pre>
-                        {/if}
-                        <pre class="tool-call-result">{part.result}</pre>
-                      {:else}
-                        <div class="tool-call-running">running…</div>
-                      {/if}
-                    </details>
-                  {/if}
-                {/each}
-                {#if msg.parts[msg.parts.length - 1].kind === 'tool_call' && msg.parts[msg.parts.length - 1].result !== null}
-                  <div class="thinking">thinking…</div>
-                {/if}
-              {/if}
-            {:else}
-              <div class="msg-content">{msg.content}</div>
-            {/if}
-          </div>
-        {/if}
-      {/each}
-    </div>
-
-    <div id="input-area">
-      <div id="input-box">
-        <textarea
-          bind:this={textareaEl}
-          bind:value={inputValue}
-          placeholder="ask something..."
-          rows="1"
-          use:autoResize
-          onkeydown={handleKeydown}
-        ></textarea>
-        <div id="input-actions">
-          <button id="send-btn" onclick={sendMessage} disabled={sending} aria-label="Send">↑</button>
-        </div>
-      </div>
-      <button id="clear-btn" onclick={clearConversation}>clear conversation</button>
-    </div>
+    <MessageList {messages} />
+    <ChatInput {sending} {isMobile} onsend={sendMessage} onclear={clearConversation} />
   </article>
 </div>
-
-<style>
-  #messages {
-    display: flex;
-    flex-direction: column;
-    gap: 1.25rem;
-    margin-block-end: 1rem;
-    padding-block-end: 0.5rem;
-  }
-
-  .msg {
-    max-width: 85%;
-  }
-  .msg.user {
-    align-self: flex-end;
-    text-align: right;
-  }
-  .msg.assistant {
-    align-self: flex-start;
-  }
-  .msg-label {
-    font-size: 0.72rem;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--muted-color);
-    margin-block-end: 0.25rem;
-  }
-  .msg-content {
-    line-height: 1.6;
-    white-space: pre-wrap;
-  }
-  .msg-content.markdown {
-    white-space: normal;
-  }
-  .msg-content.markdown :global(p) { margin-block: 0.4rem; }
-  .msg-content.markdown :global(p:first-child) { margin-block-start: 0; }
-  .msg-content.markdown :global(p:last-child) { margin-block-end: 0; }
-  .msg-content.markdown :global(ul),
-  .msg-content.markdown :global(ol) { padding-inline-start: 1.4rem; margin-block: 0.4rem; }
-  .msg-content.markdown :global(li) { margin-block: 0.15rem; }
-  .msg-content.markdown :global(code) {
-    font-family: monospace;
-    font-size: 0.9em;
-    background: var(--button-bg);
-    border: 1px solid var(--button-border);
-    border-radius: 3px;
-    padding: 0.1em 0.35em;
-  }
-  .msg-content.markdown :global(pre) {
-    background: var(--button-bg);
-    border: 1px solid var(--button-border);
-    border-radius: 6px;
-    padding: 0.75rem 1rem;
-    overflow-x: auto;
-    margin-block: 0.5rem;
-  }
-  .msg-content.markdown :global(pre code) {
-    background: none;
-    border: none;
-    padding: 0;
-    font-size: 0.85em;
-  }
-  .msg-content.markdown :global(h1),
-  .msg-content.markdown :global(h2),
-  .msg-content.markdown :global(h3) { margin-block: 0.6rem 0.3rem; }
-  .msg-content.markdown :global(blockquote) {
-    border-inline-start: 3px solid var(--hr-color);
-    margin-inline-start: 0;
-    padding-inline-start: 0.75rem;
-    color: var(--muted-color);
-  }
-
-  .thinking {
-    font-size: 0.9rem;
-    color: var(--muted-color);
-    font-style: italic;
-  }
-
-  .tool-calls {
-    display: flex;
-    flex-direction: column;
-    gap: 0.35rem;
-    margin-block-end: 0.5rem;
-  }
-
-  .tool-call {
-    border: 1px solid var(--button-border);
-    border-radius: 6px;
-    font-size: 0.85rem;
-    overflow: hidden;
-  }
-
-  .tool-call-header {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    padding: 0.35rem 0.6rem;
-    cursor: pointer;
-    user-select: none;
-    background: var(--button-bg);
-    list-style: none;
-  }
-
-  .tool-call-header::-webkit-details-marker { display: none; }
-
-  .tool-call-status {
-    color: var(--muted-color);
-  }
-
-  .tool-call-args {
-    margin: 0;
-    padding: 0.35rem 0.6rem;
-    font-size: 0.8rem;
-    white-space: pre-wrap;
-    word-break: break-word;
-    color: var(--muted-color);
-    border-top: 1px solid var(--button-border);
-  }
-
-  .tool-call-result {
-    margin: 0;
-    padding: 0.5rem 0.6rem;
-    font-size: 0.8rem;
-    white-space: pre-wrap;
-    word-break: break-word;
-    max-height: 12rem;
-    overflow-y: auto;
-    border-top: 1px solid var(--button-border);
-  }
-
-  .tool-call-running {
-    padding: 0.35rem 0.6rem;
-    font-size: 0.8rem;
-    color: var(--muted-color);
-    font-style: italic;
-    border-top: 1px solid var(--button-border);
-  }
-
-  .summary-notice {
-    font-size: 0.8rem;
-    color: var(--muted-color);
-    text-align: center;
-    font-style: italic;
-    margin-block: 0.25rem;
-  }
-
-  #input-area {
-    position: sticky;
-    bottom: 0;
-    background: var(--bg-color);
-    padding-block: 1rem 1.5rem;
-  }
-
-  #input-box {
-    display: flex;
-    flex-direction: column;
-    border: 1.5px solid var(--hr-color);
-    border-radius: 8px;
-    background: var(--bg-color);
-    transition: border-color 0.15s;
-    padding: 0.6rem 0.5rem 0.4rem 0.65rem;
-    gap: 0.4rem;
-  }
-
-  #input-box:focus-within {
-    border-color: var(--link-color);
-  }
-
-  #input-box textarea {
-    width: 100%;
-    font-family: inherit;
-    font-size: 1rem;
-    background: transparent;
-    color: var(--text-color);
-    border: none;
-    outline: none;
-    resize: none;
-    line-height: 1.5;
-    min-height: 1.5rem;
-    max-height: 10rem;
-    overflow-y: auto;
-    padding: 0;
-  }
-
-  #input-actions {
-    display: flex;
-    justify-content: flex-end;
-    align-items: center;
-  }
-
-  #send-btn {
-    width: 2rem;
-    height: 2rem;
-    min-width: 2rem;
-    aspect-ratio: 1;
-    border-radius: 50%;
-    border: none;
-    background: linear-gradient(135deg, #52A2F6, #3282e6);
-    color: white;
-    font-size: 1rem;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: opacity 0.15s;
-    line-height: 1;
-    padding: 0;
-  }
-
-  #send-btn:hover:not(:disabled) {
-    opacity: 0.85;
-  }
-
-  #send-btn:disabled {
-    opacity: 0.4;
-    cursor: default;
-  }
-
-  #clear-btn {
-    font-size: 0.8rem;
-    color: var(--muted-color);
-    background: none;
-    border: none;
-    cursor: pointer;
-    padding: 0;
-    margin-block-start: 0.4rem;
-    display: block;
-  }
-
-  #clear-btn:hover {
-    color: var(--text-color);
-  }
-</style>
