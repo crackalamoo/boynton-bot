@@ -11,6 +11,7 @@ load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path
 MODEL = os.getenv("LLM_MODEL", "gpt-5.4-mini")
 LLM_BASE_URL = os.getenv("LLM_BASE_URL")
 DB_URL = os.getenv("DATABASE_URL", "postgresql:///boynton_bot")
+MEMORY_DIR = os.environ["MEMORY_DIR"]  # required — filesystem path to memory files
 SUMMARIZATION_THRESHOLD = 100_000  # tokens (approximate)
 
 SYSTEM_PROMPT = """You are a personal research assistant for Harys Dalvi, a software engineer focused on growing his career. \

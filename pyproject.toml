@@ -3,7 +3,9 @@ name = "boynton-bot"
 version = "0.1.0"
 requires-python = ">=3.14"
 dependencies = [
+    "beautifulsoup4>=4.14.3",
     "flask",
+    "httpx>=0.28.1",
     "openai",
     "psycopg[binary,pool]>=3.3.4",
     "python-dotenv",
