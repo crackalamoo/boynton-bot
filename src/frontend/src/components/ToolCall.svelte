@@ -1,5 +1,7 @@
-<script>
-  let { part } = $props();
+<script lang="ts">
+  import type { ToolCallPart } from '../lib/types.js';
+
+  let { part }: { part: ToolCallPart } = $props();
 </script>
 
 <details class="tool-call">

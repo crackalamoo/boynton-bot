@@ -1,10 +1,15 @@
-<script>
-  let { sending, onsend, onclear, isMobile } = $props();
+<script lang="ts">
+  let { sending, onsend, onclear, isMobile }: {
+    sending: boolean;
+    onsend: (message: string) => Promise<void>;
+    onclear: () => void;
+    isMobile: boolean;
+  } = $props();
 
   let inputValue = $state('');
-  let textareaEl = $state(null);
+  let textareaEl = $state<HTMLTextAreaElement | null>(null);
 
-  function autoResize(node) {
+  function autoResize(node: HTMLTextAreaElement) {
     function resize() {
       node.style.height = 'auto';
       node.style.height = node.scrollHeight + 'px';
@@ -13,7 +18,7 @@
     return { destroy() { node.removeEventListener('input', resize); } };
   }
 
-  function handleKeydown(e) {
+  function handleKeydown(e: KeyboardEvent) {
     if (!isMobile && e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       submit();

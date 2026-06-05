@@ -1,10 +1,11 @@
-<script>
+<script lang="ts">
   import { marked } from 'marked';
   import ToolCall from './ToolCall.svelte';
+  import type { Message } from '../lib/types.js';
 
   marked.setOptions({ breaks: true });
 
-  let { msg } = $props();
+  let { msg }: { msg: Message } = $props();
 </script>
 
 <div class="msg {msg.type}">
@@ -20,11 +21,12 @@
           <ToolCall {part} />
         {/if}
       {/each}
-      {#if msg.parts[msg.parts.length - 1].kind === 'tool_call' && msg.parts[msg.parts.length - 1].result !== null}
+      {@const lastPart = msg.parts[msg.parts.length - 1]}
+      {#if lastPart.kind === 'tool_call' && lastPart.result !== null}
         <div class="thinking">thinking…</div>
       {/if}
     {/if}
-  {:else}
+  {:else if msg.type === 'user'}
     <div class="msg-content">{msg.content}</div>
   {/if}
 </div>

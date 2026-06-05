@@ -1,15 +1,16 @@
-<script>
+<script lang="ts">
   import { onMount, tick } from 'svelte';
   import MessageList from './components/MessageList.svelte';
   import ChatInput from './components/ChatInput.svelte';
   import { parseHistory } from './lib/messageHistory.js';
+  import type { Message, SSEEvent } from './lib/types.js';
 
   const isMobile = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches;
 
-  let messages = $state([]);
+  let messages = $state<Message[]>([]);
   let sending = $state(false);
 
-  async function scrollToBottom(behavior = 'instant') {
+  async function scrollToBottom(behavior: ScrollBehavior = 'instant') {
     await tick();
     window.scrollTo({ top: document.body.scrollHeight, behavior });
   }
@@ -24,7 +25,7 @@
     } catch (_) {}
   });
 
-  async function sendMessage(message) {
+  async function sendMessage(message: string) {
     sending = true;
     messages = [...messages, { type: 'user', content: message }];
     const assistantIndex = messages.length;
@@ -44,9 +45,10 @@
           const data = await res.json();
           if (data.error) errMsg = `error: ${data.error}`;
         } catch (_) {}
-        messages = messages.map((m, i) =>
-          i === assistantIndex ? { ...m, parts: [{ kind: 'text', content: errMsg }] } : m
-        );
+        messages = messages.map((m, i) => {
+          if (i !== assistantIndex || m.type !== 'assistant') return m;
+          return { ...m, parts: [{ kind: 'text' as const, content: errMsg }] };
+        });
         sending = false;
         return;
       }
@@ -66,16 +68,16 @@
         for (const frame of frames) {
           const line = frame.trim();
           if (!line.startsWith('data: ')) continue;
-          let event;
+          let event: SSEEvent;
           try {
-            event = JSON.parse(line.slice('data: '.length));
+            event = JSON.parse(line.slice('data: '.length)) as SSEEvent;
           } catch (_) {
             continue;
           }
 
           if (event.type === 'token') {
             messages = messages.map((m, i) => {
-              if (i !== assistantIndex) return m;
+              if (i !== assistantIndex || m.type !== 'assistant') return m;
               const parts = [...m.parts];
               const last = parts[parts.length - 1];
               if (last?.kind === 'text') {
@@ -87,18 +89,22 @@
             });
             scrollToBottom();
           } else if (event.type === 'tool_call') {
-            messages = messages.map((m, i) =>
-              i === assistantIndex
-                ? { ...m, parts: [...m.parts, { kind: 'tool_call', name: event.name, arguments: event.arguments ?? {}, result: null }] }
-                : m
-            );
+            messages = messages.map((m, i) => {
+              if (i !== assistantIndex || m.type !== 'assistant') return m;
+              return { ...m, parts: [...m.parts, { kind: 'tool_call' as const, name: event.name, arguments: event.arguments ?? {}, result: null }] };
+            });
             scrollToBottom();
           } else if (event.type === 'tool_result') {
             messages = messages.map((m, i) => {
-              if (i !== assistantIndex) return m;
+              if (i !== assistantIndex || m.type !== 'assistant') return m;
               const parts = [...m.parts];
               const pending = parts.findLastIndex((p) => p.kind === 'tool_call' && p.result === null);
-              if (pending !== -1) parts[pending] = { ...parts[pending], result: event.content };
+              if (pending !== -1) {
+                const existing = parts[pending];
+                if (existing.kind === 'tool_call') {
+                  parts[pending] = { ...existing, result: event.content };
+                }
+              }
               return { ...m, parts };
             });
           } else if (event.type === 'done') {
@@ -108,20 +114,19 @@
               messages = [...before, { type: 'divider' }, ...after];
             }
           } else if (event.type === 'error') {
-            messages = messages.map((m, i) =>
-              i === assistantIndex
-                ? { ...m, parts: [...m.parts, { kind: 'text', content: `error: ${event.message}` }] }
-                : m
-            );
+            messages = messages.map((m, i) => {
+              if (i !== assistantIndex || m.type !== 'assistant') return m;
+              return { ...m, parts: [...m.parts, { kind: 'text' as const, content: `error: ${event.message}` }] };
+            });
           }
         }
       }
     } catch (e) {
-      messages = messages.map((m, i) =>
-        i === assistantIndex
-          ? { ...m, parts: [{ kind: 'text', content: `error: ${e?.message ?? 'could not reach server'}` }] }
-          : m
-      );
+      const errMsg = e instanceof Error ? e.message : 'could not reach server';
+      messages = messages.map((m, i) => {
+        if (i !== assistantIndex || m.type !== 'assistant') return m;
+        return { ...m, parts: [{ kind: 'text' as const, content: `error: ${errMsg}` }] };
+      });
     }
 
     sending = false;
