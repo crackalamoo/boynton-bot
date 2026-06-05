@@ -2,6 +2,7 @@ from openai import OpenAI
 from dotenv import load_dotenv
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
+from backend.tools.registry import TOOLS, execute_tool
 import json
 import os
 
@@ -36,6 +37,37 @@ def _estimate_tokens(messages):
 def _complete(client, messages):
     chunks = client.chat.completions.create(model=MODEL, messages=messages, stream=True)
     return "".join(c.choices[0].delta.content or "" for c in chunks)
+
+
+def _collect_stream(client, messages, tools=None):
+    """Stream a completion and return (content, tool_calls, finish_reason)."""
+    kwargs = dict(model=MODEL, messages=messages, stream=True)
+    if tools:
+        kwargs["tools"] = tools
+    accumulated_content = ""
+    accumulated_tool_calls: dict = {}
+    finish_reason = "stop"
+    for chunk in client.chat.completions.create(**kwargs):
+        choice = chunk.choices[0]
+        if choice.finish_reason:
+            finish_reason = choice.finish_reason
+        delta = choice.delta
+        if delta.content:
+            accumulated_content += delta.content
+        if delta.tool_calls:
+            for tc in delta.tool_calls:
+                i = tc.index
+                if i not in accumulated_tool_calls:
+                    accumulated_tool_calls[i] = {"id": "", "name": "", "arguments": ""}
+                if tc.id:
+                    accumulated_tool_calls[i]["id"] = tc.id
+                if tc.function:
+                    if tc.function.name:
+                        accumulated_tool_calls[i]["name"] = tc.function.name
+                    if tc.function.arguments:
+                        accumulated_tool_calls[i]["arguments"] += tc.function.arguments
+    tool_calls = [accumulated_tool_calls[i] for i in sorted(accumulated_tool_calls)]
+    return accumulated_content, tool_calls, finish_reason
 
 
 class Agent:
@@ -155,12 +187,31 @@ class Agent:
 
                 accumulated = []
                 try:
-                    stream = client.chat.completions.create(model=MODEL, messages=context, stream=True)
+                    # Tool calling loop: run until model stops calling tools
+                    tool_context = list(context)
+                    while True:
+                        content, tool_calls, finish_reason = _collect_stream(client, tool_context, tools=TOOLS)
+                        if finish_reason == "tool_calls" and tool_calls:
+                            assistant_msg: dict = {"role": "assistant", "content": content or ""}
+                            assistant_msg["tool_calls"] = [
+                                {"id": tc["id"], "type": "function", "function": {"name": tc["name"], "arguments": tc["arguments"]}}
+                                for tc in tool_calls
+                            ]
+                            tool_context.append(assistant_msg)
+                            for tc in tool_calls:
+                                result = execute_tool(tc["name"], json.loads(tc["arguments"] or "{}"))
+                                tool_context.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
+                        else:
+                            break
+
+                    # Stream the final answer
+                    stream = client.chat.completions.create(model=MODEL, messages=tool_context, stream=True)
                     for chunk in stream:
-                        content = chunk.choices[0].delta.content or ""
-                        if content:
-                            accumulated.append(content)
-                            yield "data: " + json.dumps({"type": "token", "content": content}) + "\n\n"
+                        token = chunk.choices[0].delta.content or ""
+                        if token:
+                            accumulated.append(token)
+                            yield "data: " + json.dumps({"type": "token", "content": token}) + "\n\n"
+
                     cur.execute(
                         "INSERT INTO messages (session_id, role, content) VALUES (%s, %s, %s)",
                         (channel, "assistant", "".join(accumulated))
