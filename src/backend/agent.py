@@ -205,7 +205,9 @@ class Agent:
                             ]
                             tool_context.append(assistant_msg)
                             for tc in tool_calls:
+                                yield "data: " + json.dumps({"type": "tool_call", "name": tc["name"]}) + "\n\n"
                                 result = execute_tool(tc["name"], json.loads(tc["arguments"] or "{}"))
+                                yield "data: " + json.dumps({"type": "tool_result", "content": result}) + "\n\n"
                                 tool_context.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
                         else:
                             break

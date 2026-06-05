@@ -65,7 +65,7 @@
     messages = [...messages, { type: 'user', content: message }];
 
     const assistantIndex = messages.length;
-    messages = [...messages, { type: 'assistant', content: '' }];
+    messages = [...messages, { type: 'assistant', content: '', toolCalls: [] }];
     scrollToBottom();
 
     try {
@@ -111,7 +111,22 @@
             continue;
           }
 
-          if (event.type === 'token') {
+          if (event.type === 'tool_call') {
+            messages = messages.map((m, i) =>
+              i === assistantIndex
+                ? { ...m, toolCalls: [...m.toolCalls, { name: event.name, result: null }] }
+                : m
+            );
+            scrollToBottom();
+          } else if (event.type === 'tool_result') {
+            messages = messages.map((m, i) => {
+              if (i !== assistantIndex) return m;
+              const toolCalls = [...m.toolCalls];
+              const pending = toolCalls.findLastIndex((tc) => tc.result === null);
+              if (pending !== -1) toolCalls[pending] = { ...toolCalls[pending], result: event.content };
+              return { ...m, toolCalls };
+            });
+          } else if (event.type === 'token') {
             messages = messages.map((m, i) =>
               i === assistantIndex ? { ...m, content: m.content + event.content } : m
             );
@@ -169,7 +184,29 @@
           <div class="msg {msg.type}">
             <div class="msg-label">{msg.type === 'user' ? 'you' : 'boynton bot'}</div>
             {#if msg.type === 'assistant'}
-              <div class="msg-content markdown">{@html marked(msg.content)}</div>
+              {#if msg.toolCalls && msg.toolCalls.length > 0}
+                <div class="tool-calls">
+                  {#each msg.toolCalls as tc}
+                    <details class="tool-call">
+                      <summary class="tool-call-header">
+                        <span class="tool-call-status">{tc.result === null ? 'Using' : 'Used'}</span>
+                        {tc.name.replaceAll('_', ' ')}
+                      </summary>
+                      {#if tc.result !== null}
+                        <pre class="tool-call-result">{tc.result}</pre>
+                      {:else}
+                        <div class="tool-call-running">running…</div>
+                      {/if}
+                    </details>
+                  {/each}
+                </div>
+              {/if}
+              {#if !msg.content && (!msg.toolCalls || msg.toolCalls.length === 0 || msg.toolCalls.every((tc) => tc.result !== null))}
+                <div class="thinking">thinking…</div>
+              {/if}
+              {#if msg.content}
+                <div class="msg-content markdown">{@html marked(msg.content)}</div>
+              {/if}
             {:else}
               <div class="msg-content">{msg.content}</div>
             {/if}
@@ -266,6 +303,63 @@
     margin-inline-start: 0;
     padding-inline-start: 0.75rem;
     color: var(--muted-color);
+  }
+
+  .thinking {
+    font-size: 0.9rem;
+    color: var(--muted-color);
+    font-style: italic;
+  }
+
+  .tool-calls {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    margin-block-end: 0.5rem;
+  }
+
+  .tool-call {
+    border: 1px solid var(--button-border);
+    border-radius: 6px;
+    font-size: 0.85rem;
+    overflow: hidden;
+  }
+
+  .tool-call-header {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.35rem 0.6rem;
+    cursor: pointer;
+    user-select: none;
+    background: var(--button-bg);
+    list-style: none;
+  }
+
+  .tool-call-header::-webkit-details-marker { display: none; }
+
+  .tool-call-status {
+    font-size: 0.75rem;
+    color: var(--muted-color);
+  }
+
+  .tool-call-result {
+    margin: 0;
+    padding: 0.5rem 0.6rem;
+    font-size: 0.8rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 12rem;
+    overflow-y: auto;
+    border-top: 1px solid var(--button-border);
+  }
+
+  .tool-call-running {
+    padding: 0.35rem 0.6rem;
+    font-size: 0.8rem;
+    color: var(--muted-color);
+    font-style: italic;
+    border-top: 1px solid var(--button-border);
   }
 
   .summary-notice {
