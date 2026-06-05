@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 from backend.tools.registry import TOOLS, execute_tool
+from backend.memory import load_soul
 import json
 import os
 
@@ -14,9 +15,7 @@ DB_URL = os.getenv("DATABASE_URL", "postgresql:///boynton_bot")
 MEMORY_DIR = os.environ["MEMORY_DIR"]  # required — filesystem path to memory files
 SUMMARIZATION_THRESHOLD = 100_000  # tokens (approximate)
 
-SYSTEM_PROMPT = """You are a personal research assistant for Harys Dalvi, a software engineer focused on growing his career. \
-You help him stay current with technology, learn new things, think through problems, and make progress on side projects. \
-Be concise, direct, and assume strong technical knowledge."""
+SYSTEM_PROMPT = "You are a personal AI assistant."
 
 pool = ConnectionPool(DB_URL, open=True)
 
@@ -182,6 +181,9 @@ class Agent:
                 recent = cur.fetchall()
 
                 context = [{"role": "system", "content": SYSTEM_PROMPT}]
+                soul = load_soul()
+                if soul:
+                    context.append({"role": "system", "content": soul})
                 if session["summary"]:
                     context.append({"role": "system", "content": f"[Summary of earlier conversation]: {session['summary']}"})
                 context += [{"role": m["role"], "content": m["content"]} for m in recent]

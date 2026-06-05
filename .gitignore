@@ -21,3 +21,6 @@ Makefile
 
 # macOS
 .DS_Store
+
+# Memory files (personal, lives outside the repo)
+memory/
