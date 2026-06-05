@@ -45,7 +45,7 @@ def _stream_round(client, messages, tools=None):
     Yields ("token", str) for each text delta as it arrives, then a single
     ("finish", (content, tool_calls, finish_reason)) at the end.
     """
-    kwargs = dict(model=MODEL, messages=messages, stream=True)
+    kwargs = dict(model=MODEL, messages=messages, stream=True, max_tokens=2048)
     if tools:
         kwargs["tools"] = tools
     accumulated_content = ""
