@@ -21,7 +21,11 @@
       const res = await fetch('/api/history');
       if (res.ok) {
         const history = await res.json();
-        const mapped = history.messages.map((m) => ({ type: m.role, content: m.content }));
+        const mapped = history.messages.map((m) =>
+          m.role === 'assistant'
+            ? { type: 'assistant', parts: m.content ? [{ kind: 'text', content: m.content }] : [] }
+            : { type: m.role, content: m.content }
+        );
         if (history.summary_created_at) {
           const cutoff = new Date(history.summary_created_at);
           // Find the last message whose created_at is <= summary_created_at
@@ -65,7 +69,7 @@
     messages = [...messages, { type: 'user', content: message }];
 
     const assistantIndex = messages.length;
-    messages = [...messages, { type: 'assistant', content: '', toolCalls: [] }];
+    messages = [...messages, { type: 'assistant', parts: [] }];
     scrollToBottom();
 
     try {
@@ -82,7 +86,7 @@
           if (data.error) errMsg = `error: ${data.error}`;
         } catch (_) {}
         messages = messages.map((m, i) =>
-          i === assistantIndex ? { ...m, content: errMsg } : m
+          i === assistantIndex ? { ...m, parts: [{ kind: 'text', content: errMsg }] } : m
         );
         sending = false;
         textareaEl?.focus();
@@ -111,26 +115,34 @@
             continue;
           }
 
-          if (event.type === 'tool_call') {
+          if (event.type === 'token') {
+            messages = messages.map((m, i) => {
+              if (i !== assistantIndex) return m;
+              const parts = [...m.parts];
+              const last = parts[parts.length - 1];
+              if (last?.kind === 'text') {
+                parts[parts.length - 1] = { ...last, content: last.content + event.content };
+              } else {
+                parts.push({ kind: 'text', content: event.content });
+              }
+              return { ...m, parts };
+            });
+            scrollToBottom();
+          } else if (event.type === 'tool_call') {
             messages = messages.map((m, i) =>
               i === assistantIndex
-                ? { ...m, toolCalls: [...m.toolCalls, { name: event.name, result: null }] }
+                ? { ...m, parts: [...m.parts, { kind: 'tool_call', name: event.name, result: null }] }
                 : m
             );
             scrollToBottom();
           } else if (event.type === 'tool_result') {
             messages = messages.map((m, i) => {
               if (i !== assistantIndex) return m;
-              const toolCalls = [...m.toolCalls];
-              const pending = toolCalls.findLastIndex((tc) => tc.result === null);
-              if (pending !== -1) toolCalls[pending] = { ...toolCalls[pending], result: event.content };
-              return { ...m, toolCalls };
+              const parts = [...m.parts];
+              const pending = parts.findLastIndex((p) => p.kind === 'tool_call' && p.result === null);
+              if (pending !== -1) parts[pending] = { ...parts[pending], result: event.content };
+              return { ...m, parts };
             });
-          } else if (event.type === 'token') {
-            messages = messages.map((m, i) =>
-              i === assistantIndex ? { ...m, content: m.content + event.content } : m
-            );
-            scrollToBottom();
           } else if (event.type === 'done') {
             if (event.summarized) {
               const before = messages.slice(0, assistantIndex);
@@ -139,14 +151,18 @@
             }
           } else if (event.type === 'error') {
             messages = messages.map((m, i) =>
-              i === assistantIndex ? { ...m, content: `error: ${event.message}` } : m
+              i === assistantIndex
+                ? { ...m, parts: [...m.parts, { kind: 'text', content: `error: ${event.message}` }] }
+                : m
             );
           }
         }
       }
     } catch (e) {
       messages = messages.map((m, i) =>
-        i === assistantIndex ? { ...m, content: `error: ${e?.message ?? 'could not reach server'}` } : m
+        i === assistantIndex
+          ? { ...m, parts: [{ kind: 'text', content: `error: ${e?.message ?? 'could not reach server'}` }] }
+          : m
       );
     }
 
@@ -184,28 +200,29 @@
           <div class="msg {msg.type}">
             <div class="msg-label">{msg.type === 'user' ? 'you' : 'boynton bot'}</div>
             {#if msg.type === 'assistant'}
-              {#if msg.toolCalls && msg.toolCalls.length > 0}
-                <div class="tool-calls">
-                  {#each msg.toolCalls as tc}
+              {#if !msg.parts || msg.parts.length === 0}
+                <div class="thinking">thinking…</div>
+              {:else}
+                {#each msg.parts as part}
+                  {#if part.kind === 'text'}
+                    <div class="msg-content markdown">{@html marked(part.content)}</div>
+                  {:else if part.kind === 'tool_call'}
                     <details class="tool-call">
                       <summary class="tool-call-header">
-                        <span class="tool-call-status">{tc.result === null ? 'Using' : 'Used'}</span>
-                        {tc.name.replaceAll('_', ' ')}
+                        <span class="tool-call-status">{part.result === null ? 'Using' : 'Used'}</span>
+                        {part.name.replaceAll('_', ' ')}
                       </summary>
-                      {#if tc.result !== null}
-                        <pre class="tool-call-result">{tc.result}</pre>
+                      {#if part.result !== null}
+                        <pre class="tool-call-result">{part.result}</pre>
                       {:else}
                         <div class="tool-call-running">running…</div>
                       {/if}
                     </details>
-                  {/each}
-                </div>
-              {/if}
-              {#if !msg.content && (!msg.toolCalls || msg.toolCalls.length === 0 || msg.toolCalls.every((tc) => tc.result !== null))}
-                <div class="thinking">thinking…</div>
-              {/if}
-              {#if msg.content}
-                <div class="msg-content markdown">{@html marked(msg.content)}</div>
+                  {/if}
+                {/each}
+                {#if msg.parts[msg.parts.length - 1].kind === 'tool_call' && msg.parts[msg.parts.length - 1].result !== null}
+                  <div class="thinking">thinking…</div>
+                {/if}
               {/if}
             {:else}
               <div class="msg-content">{msg.content}</div>
@@ -339,7 +356,6 @@
   .tool-call-header::-webkit-details-marker { display: none; }
 
   .tool-call-status {
-    font-size: 0.75rem;
     color: var(--muted-color);
   }
 

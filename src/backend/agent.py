@@ -39,8 +39,12 @@ def _complete(client, messages):
     return "".join(c.choices[0].delta.content or "" for c in chunks)
 
 
-def _collect_stream(client, messages, tools=None):
-    """Stream a completion and return (content, tool_calls, finish_reason)."""
+def _stream_round(client, messages, tools=None):
+    """Stream one completion round.
+
+    Yields ("token", str) for each text delta as it arrives, then a single
+    ("finish", (content, tool_calls, finish_reason)) at the end.
+    """
     kwargs = dict(model=MODEL, messages=messages, stream=True)
     if tools:
         kwargs["tools"] = tools
@@ -54,6 +58,7 @@ def _collect_stream(client, messages, tools=None):
         delta = choice.delta
         if delta.content:
             accumulated_content += delta.content
+            yield ("token", delta.content)
         if delta.tool_calls:
             for tc in delta.tool_calls:
                 i = tc.index
@@ -67,7 +72,7 @@ def _collect_stream(client, messages, tools=None):
                     if tc.function.arguments:
                         accumulated_tool_calls[i]["arguments"] += tc.function.arguments
     tool_calls = [accumulated_tool_calls[i] for i in sorted(accumulated_tool_calls)]
-    return accumulated_content, tool_calls, finish_reason
+    yield ("finish", (accumulated_content, tool_calls, finish_reason))
 
 
 class Agent:
@@ -193,12 +198,21 @@ class Agent:
 
                 accumulated = []
                 try:
-                    # Tool calling loop: run until model stops calling tools
                     tool_context = list(context)
                     while True:
-                        content, tool_calls, finish_reason = _collect_stream(client, tool_context, tools=TOOLS)
+                        round_content = []
+                        tool_calls = []
+                        finish_reason = "stop"
+                        for kind, value in _stream_round(client, tool_context, tools=TOOLS):
+                            if kind == "token":
+                                accumulated.append(value)
+                                round_content.append(value)
+                                yield "data: " + json.dumps({"type": "token", "content": value}) + "\n\n"
+                            else:
+                                _, tool_calls, finish_reason = value
+
                         if finish_reason == "tool_calls" and tool_calls:
-                            assistant_msg: dict = {"role": "assistant", "content": content or ""}
+                            assistant_msg: dict = {"role": "assistant", "content": "".join(round_content)}
                             assistant_msg["tool_calls"] = [
                                 {"id": tc["id"], "type": "function", "function": {"name": tc["name"], "arguments": tc["arguments"]}}
                                 for tc in tool_calls
@@ -211,14 +225,6 @@ class Agent:
                                 tool_context.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
                         else:
                             break
-
-                    # Stream the final answer
-                    stream = client.chat.completions.create(model=MODEL, messages=tool_context, stream=True)
-                    for chunk in stream:
-                        token = chunk.choices[0].delta.content or ""
-                        if token:
-                            accumulated.append(token)
-                            yield "data: " + json.dumps({"type": "token", "content": token}) + "\n\n"
 
                     cur.execute(
                         "INSERT INTO messages (session_id, role, content) VALUES (%s, %s, %s)",
