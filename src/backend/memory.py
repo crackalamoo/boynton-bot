@@ -10,3 +10,15 @@ def load_soul() -> str:
             return f.read()
     except FileNotFoundError:
         return ""
+
+
+def load_memory_index() -> str:
+    """Load MEMORY.md from MEMORY_DIR. Returns empty string if file doesn't exist."""
+    memory_dir = os.environ["MEMORY_DIR"]
+    memory_path = os.path.join(memory_dir, "MEMORY.md")
+    try:
+        with open(memory_path, "r") as f:
+            return f.read()
+    except FileNotFoundError:
+        return ""
+

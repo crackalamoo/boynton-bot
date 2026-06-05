@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 from backend.tools.registry import TOOLS, execute_tool
-from backend.memory import load_soul
+from backend.memory import load_soul, load_memory_index
 import json
 import os
 
@@ -184,6 +184,9 @@ class Agent:
                 soul = load_soul()
                 if soul:
                     context.append({"role": "system", "content": soul})
+                memory_index = load_memory_index()
+                if memory_index:
+                    context.append({"role": "system", "content": f"[Memory index]\n{memory_index}"})
                 if session["summary"]:
                     context.append({"role": "system", "content": f"[Summary of earlier conversation]: {session['summary']}"})
                 context += [{"role": m["role"], "content": m["content"]} for m in recent]
@@ -223,3 +226,4 @@ class Agent:
                     yield "data: " + json.dumps({"type": "done", "summarized": did_summarize}) + "\n\n"
                 except Exception as e:
                     yield "data: " + json.dumps({"type": "error", "message": str(e)}) + "\n\n"
+
