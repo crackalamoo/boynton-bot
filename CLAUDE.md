@@ -2,19 +2,18 @@
 
 Personal AI research assistant. Single user — no auth needed.
 
-## Architecture intent
+## Stack
 
-The backend should split into an agent core (conversation, summarization, tools) and channel adapters (web UI, Telegram, etc.).
+Flask (port 9174) + nginx (port 80) + launchd. Svelte 5 + Vite frontend. Postgres via psycopg3. OpenAI-compatible LLM API — local qwen3-8b or prod via env vars. Always use `stream=True` — local qwen breaks otherwise.
 
-## Key constraints
+## Memory
 
-- Always use `stream=True` when calling the LLM — the local qwen backend always streams regardless of the flag, so non-streaming calls will break with it.
-- System prompt must stay stable across requests (no dynamic content injected into it) to maximize prompt cache hits.
-- History is per-session (one per channel). Cross-channel context is handled via a separate memory layer — important facts are extracted and stored, then injected into any session's system prompt. Raw conversation history is never shared across channels.
+`MEMORY_DIR` env var (required). May use `memory/` in this repo (gitignored).
 
-## Planned but not yet built
+- `SOUL.md` — personality. Auto-injected. Read-only to the agent.
+- `MEMORY.md` — index of other files. Auto-injected.
+- Other files — agent reads/writes on demand via memory tools.
 
-- Postgres for persistent conversation history (per-session) and a memory layer (cross-session facts)
-- Channel abstraction (Telegram, etc.)
-- Tool calling loop for agentic behavior
-- Subagent support (requires per-conversation history isolation first)
+## Tools
+
+`src/backend/tools/registry.py` contains all tools.
