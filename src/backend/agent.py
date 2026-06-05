@@ -87,7 +87,7 @@ class Agent:
                 summary_created_at = session["summary_created_at"]
 
                 cur.execute(
-                    "SELECT role, content, created_at FROM messages WHERE session_id = %s ORDER BY created_at ASC",
+                    "SELECT role, content, tool_name, arguments, created_at FROM messages WHERE session_id = %s ORDER BY created_at ASC",
                     (channel,)
                 )
                 rows = cur.fetchall()
@@ -96,6 +96,8 @@ class Agent:
                     {
                         "role": r["role"],
                         "content": r["content"],
+                        "tool_name": r["tool_name"],
+                        "arguments": r["arguments"],
                         "created_at": r["created_at"].isoformat(),
                     }
                     for r in rows
@@ -142,13 +144,13 @@ class Agent:
                 if session["summary_created_at"]:
                     cur.execute(
                         """SELECT role, content FROM messages
-                           WHERE session_id = %s AND created_at > %s
+                           WHERE session_id = %s AND created_at > %s AND role IN ('user', 'assistant')
                            ORDER BY created_at ASC""",
                         (channel, session["summary_created_at"])
                     )
                 else:
                     cur.execute(
-                        "SELECT role, content FROM messages WHERE session_id = %s ORDER BY created_at ASC",
+                        "SELECT role, content FROM messages WHERE session_id = %s AND role IN ('user', 'assistant') ORDER BY created_at ASC",
                         (channel,)
                     )
                 unsummarized = cur.fetchall()[:-1]  # exclude just-inserted user message
@@ -174,13 +176,13 @@ class Agent:
                 if session["summary_created_at"]:
                     cur.execute(
                         """SELECT role, content FROM messages
-                           WHERE session_id = %s AND created_at > %s
+                           WHERE session_id = %s AND created_at > %s AND role IN ('user', 'assistant')
                            ORDER BY created_at ASC""",
                         (channel, session["summary_created_at"])
                     )
                 else:
                     cur.execute(
-                        "SELECT role, content FROM messages WHERE session_id = %s ORDER BY created_at ASC",
+                        "SELECT role, content FROM messages WHERE session_id = %s AND role IN ('user', 'assistant') ORDER BY created_at ASC",
                         (channel,)
                     )
                 recent = cur.fetchall()
@@ -194,24 +196,35 @@ class Agent:
                     context.append({"role": "system", "content": f"[Memory index]\n{memory_index}"})
                 if session["summary"]:
                     context.append({"role": "system", "content": f"[Summary of earlier conversation]: {session['summary']}"})
-                context += [{"role": m["role"], "content": m["content"]} for m in recent]
-
-                accumulated = []
+                # Merge consecutive assistant rows (from multi-round tool calls) into one message
+                context_messages = []
+                for m in recent:
+                    if m["role"] == "assistant" and context_messages and context_messages[-1]["role"] == "assistant":
+                        context_messages[-1] = {"role": "assistant", "content": context_messages[-1]["content"] + (m["content"] or "")}
+                    else:
+                        context_messages.append({"role": m["role"], "content": m["content"] or ""})
+                context += context_messages
                 try:
                     tool_context = list(context)
+                    round_content = []
                     while True:
                         round_content = []
                         tool_calls = []
                         finish_reason = "stop"
                         for kind, value in _stream_round(client, tool_context, tools=TOOLS):
                             if kind == "token":
-                                accumulated.append(value)
                                 round_content.append(value)
                                 yield "data: " + json.dumps({"type": "token", "content": value}) + "\n\n"
                             else:
                                 _, tool_calls, finish_reason = value
 
                         if finish_reason == "tool_calls" and tool_calls:
+                            # Save pre-tool text before inserting tool rows so DB order matches display order
+                            if round_content:
+                                cur.execute(
+                                    "INSERT INTO messages (session_id, role, content) VALUES (%s, %s, %s)",
+                                    (channel, "assistant", "".join(round_content))
+                                )
                             assistant_msg: dict = {"role": "assistant", "content": "".join(round_content)}
                             assistant_msg["tool_calls"] = [
                                 {"id": tc["id"], "type": "function", "function": {"name": tc["name"], "arguments": tc["arguments"]}}
@@ -219,17 +232,28 @@ class Agent:
                             ]
                             tool_context.append(assistant_msg)
                             for tc in tool_calls:
-                                yield "data: " + json.dumps({"type": "tool_call", "name": tc["name"]}) + "\n\n"
-                                result = execute_tool(tc["name"], json.loads(tc["arguments"] or "{}"))
+                                args = json.loads(tc["arguments"] or "{}")
+                                yield "data: " + json.dumps({"type": "tool_call", "name": tc["name"], "arguments": args}) + "\n\n"
+                                cur.execute(
+                                    "INSERT INTO messages (session_id, role, tool_name, arguments) VALUES (%s, %s, %s, %s::jsonb)",
+                                    (channel, "tool_call", tc["name"], tc["arguments"] or "{}")
+                                )
+                                result = execute_tool(tc["name"], args)
                                 yield "data: " + json.dumps({"type": "tool_result", "content": result}) + "\n\n"
+                                cur.execute(
+                                    "INSERT INTO messages (session_id, role, tool_name, content) VALUES (%s, %s, %s, %s)",
+                                    (channel, "tool_result", tc["name"], result)
+                                )
+                                conn.commit()
                                 tool_context.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
                         else:
                             break
 
-                    cur.execute(
-                        "INSERT INTO messages (session_id, role, content) VALUES (%s, %s, %s)",
-                        (channel, "assistant", "".join(accumulated))
-                    )
+                    if round_content:
+                        cur.execute(
+                            "INSERT INTO messages (session_id, role, content) VALUES (%s, %s, %s)",
+                            (channel, "assistant", "".join(round_content))
+                        )
                     conn.commit()
                     yield "data: " + json.dumps({"type": "done", "summarized": did_summarize}) + "\n\n"
                 except Exception as e:

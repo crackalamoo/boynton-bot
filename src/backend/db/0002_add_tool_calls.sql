@@ -1,0 +1,3 @@
+ALTER TABLE messages ADD COLUMN tool_name TEXT;
+ALTER TABLE messages ALTER COLUMN content DROP NOT NULL;
+ALTER TABLE messages ADD COLUMN arguments JSONB;

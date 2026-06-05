@@ -21,23 +21,39 @@
       const res = await fetch('/api/history');
       if (res.ok) {
         const history = await res.json();
-        const mapped = history.messages.map((m) =>
-          m.role === 'assistant'
-            ? { type: 'assistant', parts: m.content ? [{ kind: 'text', content: m.content }] : [] }
-            : { type: m.role, content: m.content }
-        );
-        if (history.summary_created_at) {
-          const cutoff = new Date(history.summary_created_at);
-          // Find the last message whose created_at is <= summary_created_at
-          let insertAfter = -1;
-          for (let i = 0; i < history.messages.length; i++) {
-            if (new Date(history.messages[i].created_at) <= cutoff) {
-              insertAfter = i;
-            }
+        const mapped = [];
+        let dividerInsertAfter = -1;
+        const cutoff = history.summary_created_at ? new Date(history.summary_created_at) : null;
+
+        function ensureAssistant() {
+          const last = mapped[mapped.length - 1];
+          if (last?.type === 'assistant') return last;
+          const msg = { type: 'assistant', parts: [] };
+          mapped.push(msg);
+          return msg;
+        }
+
+        for (const m of history.messages) {
+          if (m.role === 'user') {
+            mapped.push({ type: 'user', content: m.content });
+          } else if (m.role === 'assistant') {
+            const asst = ensureAssistant();
+            if (m.content) asst.parts.push({ kind: 'text', content: m.content });
+          } else if (m.role === 'tool_call') {
+            const asst = ensureAssistant();
+            asst.parts.push({ kind: 'tool_call', name: m.tool_name, arguments: m.arguments ?? {}, result: null });
+          } else if (m.role === 'tool_result') {
+            const asst = ensureAssistant();
+            const pending = asst.parts.findLastIndex((p) => p.kind === 'tool_call' && p.result === null);
+            if (pending !== -1) asst.parts[pending] = { ...asst.parts[pending], result: m.content };
           }
-          if (insertAfter >= 0) {
-            mapped.splice(insertAfter + 1, 0, { type: 'divider' });
+          if (cutoff && new Date(m.created_at) <= cutoff) {
+            dividerInsertAfter = mapped.length - 1;
           }
+        }
+
+        if (dividerInsertAfter >= 0) {
+          mapped.splice(dividerInsertAfter + 1, 0, { type: 'divider' });
         }
         messages = mapped;
         scrollToBottom();
@@ -131,7 +147,7 @@
           } else if (event.type === 'tool_call') {
             messages = messages.map((m, i) =>
               i === assistantIndex
-                ? { ...m, parts: [...m.parts, { kind: 'tool_call', name: event.name, result: null }] }
+                ? { ...m, parts: [...m.parts, { kind: 'tool_call', name: event.name, arguments: event.arguments ?? {}, result: null }] }
                 : m
             );
             scrollToBottom();
@@ -213,6 +229,9 @@
                         {part.name.replaceAll('_', ' ')}
                       </summary>
                       {#if part.result !== null}
+                        {#if part.arguments && Object.keys(part.arguments).length > 0}
+                          <pre class="tool-call-args">{JSON.stringify(part.arguments, null, 2)}</pre>
+                        {/if}
                         <pre class="tool-call-result">{part.result}</pre>
                       {:else}
                         <div class="tool-call-running">running…</div>
@@ -357,6 +376,16 @@
 
   .tool-call-status {
     color: var(--muted-color);
+  }
+
+  .tool-call-args {
+    margin: 0;
+    padding: 0.35rem 0.6rem;
+    font-size: 0.8rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--muted-color);
+    border-top: 1px solid var(--button-border);
   }
 
   .tool-call-result {
