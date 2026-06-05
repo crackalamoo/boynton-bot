@@ -87,7 +87,7 @@ class Agent:
                 summary_created_at = session["summary_created_at"]
 
                 cur.execute(
-                    "SELECT role, content, tool_name, arguments, created_at FROM messages WHERE session_id = %s ORDER BY created_at ASC",
+                    "SELECT role, content, tool_name, arguments, created_at FROM messages WHERE session_id = %s ORDER BY id ASC",
                     (channel,)
                 )
                 rows = cur.fetchall()
@@ -145,12 +145,12 @@ class Agent:
                     cur.execute(
                         """SELECT role, content FROM messages
                            WHERE session_id = %s AND created_at > %s AND role IN ('user', 'assistant')
-                           ORDER BY created_at ASC""",
+                           ORDER BY id ASC""",
                         (channel, session["summary_created_at"])
                     )
                 else:
                     cur.execute(
-                        "SELECT role, content FROM messages WHERE session_id = %s AND role IN ('user', 'assistant') ORDER BY created_at ASC",
+                        "SELECT role, content FROM messages WHERE session_id = %s AND role IN ('user', 'assistant') ORDER BY id ASC",
                         (channel,)
                     )
                 unsummarized = cur.fetchall()[:-1]  # exclude just-inserted user message
@@ -175,14 +175,14 @@ class Agent:
                 # Build context: system prompt + optional summary + messages after summary cutoff
                 if session["summary_created_at"]:
                     cur.execute(
-                        """SELECT role, content FROM messages
-                           WHERE session_id = %s AND created_at > %s AND role IN ('user', 'assistant')
-                           ORDER BY created_at ASC""",
+                        """SELECT role, content, tool_name, arguments FROM messages
+                           WHERE session_id = %s AND created_at > %s
+                           ORDER BY id ASC""",
                         (channel, session["summary_created_at"])
                     )
                 else:
                     cur.execute(
-                        "SELECT role, content FROM messages WHERE session_id = %s AND role IN ('user', 'assistant') ORDER BY created_at ASC",
+                        "SELECT role, content, tool_name, arguments FROM messages WHERE session_id = %s ORDER BY id ASC",
                         (channel,)
                     )
                 recent = cur.fetchall()
@@ -196,13 +196,32 @@ class Agent:
                     context.append({"role": "system", "content": f"[Memory index]\n{memory_index}"})
                 if session["summary"]:
                     context.append({"role": "system", "content": f"[Summary of earlier conversation]: {session['summary']}"})
-                # Merge consecutive assistant rows (from multi-round tool calls) into one message
+                # Reconstruct OpenAI-compatible messages including tool calls
                 context_messages = []
+                tc_counter = 0
+                pending_ids: list = []
                 for m in recent:
-                    if m["role"] == "assistant" and context_messages and context_messages[-1]["role"] == "assistant":
-                        context_messages[-1] = {"role": "assistant", "content": context_messages[-1]["content"] + (m["content"] or "")}
-                    else:
-                        context_messages.append({"role": m["role"], "content": m["content"] or ""})
+                    if m["role"] == "user":
+                        context_messages.append({"role": "user", "content": m["content"] or ""})
+                        pending_ids = []
+                    elif m["role"] == "assistant":
+                        context_messages.append({"role": "assistant", "content": m["content"] or ""})
+                        pending_ids = []
+                    elif m["role"] == "tool_call":
+                        tc_id = f"call_{tc_counter}"
+                        tc_counter += 1
+                        last = context_messages[-1]
+                        if "tool_calls" not in last:
+                            last["tool_calls"] = []
+                        last["tool_calls"].append({
+                            "id": tc_id,
+                            "type": "function",
+                            "function": {"name": m["tool_name"], "arguments": json.dumps(m["arguments"] or {})},
+                        })
+                        pending_ids.append(tc_id)
+                    elif m["role"] == "tool_result":
+                        tc_id = pending_ids.pop(0)
+                        context_messages.append({"role": "tool", "tool_call_id": tc_id, "content": m["content"] or ""})
                 context += context_messages
                 try:
                     tool_context = list(context)
