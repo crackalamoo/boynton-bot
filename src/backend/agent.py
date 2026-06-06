@@ -228,9 +228,9 @@ def _execute(
                 _, tool_calls, finish_reason = value
 
         if finish_reason == "tool_calls" and tool_calls:
-            # Pre-tool assistant text (preserve DB ordering: text before tool rows)
-            if round_content:
-                pending_writes.append({"op": "assistant_msg", "content": "".join(round_content)})
+            # Always persist the assistant turn (even empty content) so _build_context
+            # can attach tool_calls to the right message and preserve token sequence for prefix cache.
+            pending_writes.append({"op": "assistant_msg", "content": "".join(round_content)})
             assistant_msg: dict = {"role": "assistant", "content": "".join(round_content)}
             assistant_msg["tool_calls"] = [
                 {"id": tc["id"], "type": "function", "function": {"name": tc["name"], "arguments": tc["arguments"]}}
