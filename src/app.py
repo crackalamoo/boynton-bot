@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify, Response
 from dotenv import load_dotenv
 from backend.agent import Agent
+from backend.heartbeat import start_heartbeat
 import os
 
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"))
@@ -9,6 +10,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 app = Flask(__name__, static_folder=os.path.join(ROOT, "src/frontend/dist"), static_url_path="")
 
 agent = Agent()
+start_heartbeat(agent)
 
 
 @app.route("/chat")
@@ -22,10 +24,12 @@ def chat():
     user_message = (data or {}).get("message", "").strip()
     if not user_message:
         return jsonify({"error": "No message provided"}), 400
-
     try:
+        started = agent.submit("web", user_message)
+        if not started:
+            return jsonify({"error": "Already processing"}), 409
         return Response(
-            agent.chat("web", user_message),
+            agent.stream("web"),
             mimetype="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
