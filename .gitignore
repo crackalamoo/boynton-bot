@@ -24,3 +24,6 @@ Makefile
 
 # Memory files (personal, lives outside the repo)
 memory/
+
+# Docker sandbox home directory (persistent storage, not tracked)
+docker/home/
