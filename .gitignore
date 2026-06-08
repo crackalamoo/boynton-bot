@@ -13,8 +13,9 @@ frontend/node_modules/
 # Editors
 .vscode/
 
-# OS-specific Makefile not checked in
+# OS-specific Makefile and launchd config not checked in
 Makefile
+boynton-bot-daemon.plist
 
 # Logs
 *.log
