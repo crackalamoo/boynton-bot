@@ -1,4 +1,4 @@
-from openai import OpenAI
+from openai import OpenAI, APIConnectionError
 from dotenv import load_dotenv
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
@@ -12,43 +12,50 @@ from typing import Callable, Generator
 
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), ".env"))
 
-MODEL = os.getenv("LLM_MODEL", "gpt-5.4-mini")
-LLM_BASE_URL = os.getenv("LLM_BASE_URL")
-DB_URL = os.getenv("DATABASE_URL", "postgresql:///boynton_bot")
-MEMORY_DIR = os.environ["MEMORY_DIR"]  # required — filesystem path to memory files
-SUMMARIZATION_THRESHOLD = 100_000  # tokens (approximate)
-
-SYSTEM_PROMPT = "You are a personal AI assistant."
-
-pool = ConnectionPool(DB_URL, open=True)
+_LLM_BASE_URLS = [u.strip() for u in (os.getenv("LLM_BASE_URL") or "").split(",") if u.strip()]
+_LLM_API_KEYS = [k.strip() for k in (os.getenv("OPENAI_API_KEY") or "local").split(",") if k.strip()]
+_LLM_MODELS = [m.strip() for m in (os.getenv("LLM_MODEL") or "gpt-5.4-mini").split(",") if m.strip()]
 
 
-def _get_client():
-    api_key = os.getenv("OPENAI_API_KEY", "local")
-    kwargs = {"api_key": api_key}
-    if LLM_BASE_URL:
-        kwargs["base_url"] = LLM_BASE_URL
-    elif api_key == "local":
-        raise ValueError("OPENAI_API_KEY not set")
-    return OpenAI(**kwargs)
+def _build_clients() -> list[tuple[OpenAI, str]]:
+    default_model = _LLM_MODELS[0] if _LLM_MODELS else "gpt-5.4-mini"
+    if not _LLM_BASE_URLS:
+        key = _LLM_API_KEYS[0] if _LLM_API_KEYS else "local"
+        if key == "local":
+            raise ValueError("OPENAI_API_KEY not set")
+        return [(OpenAI(api_key=key), default_model)]
+    return [
+        (
+            OpenAI(
+                api_key=_LLM_API_KEYS[i] if i < len(_LLM_API_KEYS) else _LLM_API_KEYS[-1],
+                base_url=url,
+            ),
+            _LLM_MODELS[i] if i < len(_LLM_MODELS) else _LLM_MODELS[-1],
+        )
+        for i, url in enumerate(_LLM_BASE_URLS)
+    ]
 
 
-def _estimate_tokens(messages):
-    return sum(len(m.get("content", "")) // 4 for m in messages)
+CLIENTS: list[tuple[OpenAI, str]] = _build_clients()
 
 
-def _complete(client, messages):
-    chunks = client.chat.completions.create(model=MODEL, messages=messages, stream=True)
+def _complete(client: OpenAI, model: str, messages: list) -> str:
+    chunks = client.chat.completions.create(model=model, messages=messages, stream=True)
     return "".join(c.choices[0].delta.content or "" for c in chunks)
 
 
-def _stream_round(client, messages, tools=None, max_tokens: int | None = None):
+def _stream_round(
+    client: OpenAI,
+    model: str,
+    messages: list,
+    tools=None,
+    max_tokens: int | None = None,
+) -> Generator[tuple, None, None]:
     """Stream one completion round.
 
-    Yields ("token", str) for each text delta as it arrives, then a single
-    ("finish", (content, tool_calls, finish_reason)) at the end.
+    Yields ("token", str) for each text delta, then ("finish", (content, tool_calls, finish_reason)).
     """
-    kwargs = dict(model=MODEL, messages=messages, stream=True, max_tokens=max_tokens if max_tokens is not None else 2048)
+    kwargs = dict(model=model, messages=messages, stream=True, max_tokens=max_tokens if max_tokens is not None else 2048)
     if tools:
         kwargs["tools"] = tools
     accumulated_content = ""
@@ -78,7 +85,21 @@ def _stream_round(client, messages, tools=None, max_tokens: int | None = None):
     yield ("finish", (accumulated_content, tool_calls, finish_reason))
 
 
-def _build_context(client, channel: str, user_message: str) -> tuple[list[dict], bool]:
+DB_URL = os.getenv("DATABASE_URL", "postgresql:///boynton_bot")
+MEMORY_DIR = os.environ["MEMORY_DIR"]  # required — filesystem path to memory files
+SUMMARIZATION_THRESHOLD = 100_000  # tokens (approximate)
+
+SYSTEM_PROMPT = "You are a personal AI assistant."
+
+pool = ConnectionPool(DB_URL, open=True)
+
+
+
+def _estimate_tokens(messages):
+    return sum(len(m.get("content", "")) // 4 for m in messages)
+
+
+def _build_context(client, model: str, channel: str, user_message: str) -> tuple[list[dict], bool]:
     """Read DB to build the LLM context list, including inline summarization if needed.
 
     Returns (context_messages, did_summarize).
@@ -116,7 +137,7 @@ def _build_context(client, channel: str, user_message: str) -> tuple[list[dict],
             if _estimate_tokens(unsummarized) > SUMMARIZATION_THRESHOLD:
                 prior = f"Prior summary:\n{session['summary']}\n\n" if session["summary"] else ""
                 lines = "\n".join(f"{m['role'].upper()}: {m['content']}" for m in unsummarized)
-                new_summary = _complete(client, [{
+                new_summary = _complete(client, model, [{
                     "role": "user",
                     "content": f"Summarize this conversation concisely, preserving key facts and context:\n\n{prior}{lines}"
                 }])
@@ -189,6 +210,7 @@ def _build_context(client, channel: str, user_message: str) -> tuple[list[dict],
 
 def _execute(
     client,
+    model: str,
     channel: str,
     user_message: str,
     pending_writes: list[dict],
@@ -208,7 +230,7 @@ def _execute(
       {"op": "tool_call", "tool_name": "...", "arguments": {...}}   # arguments is dict
       {"op": "tool_result", "tool_name": "...", "content": "..."}
     """
-    context, did_summarize = _build_context(client, channel, user_message)
+    context, did_summarize = _build_context(client, model, channel, user_message)
 
     # Seed pending_writes with session + user message
     pending_writes.append({"op": "ensure_session", "channel": channel})
@@ -220,7 +242,7 @@ def _execute(
         round_content = []
         tool_calls = []
         finish_reason = "stop"
-        for kind, value in _stream_round(client, tool_context, tools=TOOLS, max_tokens=max_tokens):
+        for kind, value in _stream_round(client, model, tool_context, tools=TOOLS, max_tokens=max_tokens):
             if kind == "token":
                 round_content.append(value)
                 yield "data: " + json.dumps({"type": "token", "content": value}) + "\n\n"
@@ -251,6 +273,32 @@ def _execute(
     if round_content:
         pending_writes.append({"op": "assistant_msg", "content": "".join(round_content)})
     yield "data: " + json.dumps({"type": "done", "summarized": did_summarize}) + "\n\n"
+
+
+def _execute_with_fallback(
+    channel: str,
+    user_message: str,
+    pending_writes: list[dict],
+    max_tokens: int | None = None,
+) -> Generator[str, None, None]:
+    last_exc: Exception | None = None
+    for client, model in CLIENTS:
+        attempt_writes: list[dict] = []
+        gen = _execute(client, model, channel, user_message, attempt_writes, max_tokens=max_tokens)
+        committed = False
+        try:
+            for event in gen:
+                committed = True
+                yield event
+            pending_writes.extend(attempt_writes)
+            return
+        except APIConnectionError as e:
+            if committed:
+                raise
+            last_exc = e
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("No LLM servers available")
 
 
 def _persist(channel: str, pending_writes: list[dict]) -> None:
@@ -340,12 +388,7 @@ class Agent:
         """Start a background daemon thread that runs _execute and feeds self._queues[channel].
 
         Returns False if the channel is already running, True otherwise.
-        Raises ValueError synchronously if the LLM client cannot be initialized.
         """
-        # Call _get_client() before acquiring the lock so that a ValueError (missing API key)
-        # propagates synchronously without marking the channel as running.
-        client = _get_client()
-
         with self._lock:
             if channel in self._running:
                 return False
@@ -356,7 +399,7 @@ class Agent:
         def _worker():
             pending_writes: list[dict] = []
             try:
-                for sse in _execute(client, channel, user_message, pending_writes, max_tokens=max_tokens):
+                for sse in _execute_with_fallback(channel, user_message, pending_writes, max_tokens=max_tokens):
                     q.put(sse)
                 _persist(channel, pending_writes)
             except Exception as e:
@@ -397,9 +440,8 @@ class Agent:
         """Synchronous execution for heartbeat. Collects all SSE strings and returns
         (events, persist_fn) where persist_fn() persists to DB.
         """
-        client = _get_client()
         pending_writes: list[dict] = []
-        events = list(_execute(client, channel, user_message, pending_writes, max_tokens=max_tokens))
+        events = list(_execute_with_fallback(channel, user_message, pending_writes, max_tokens=max_tokens))
 
         def persist_fn():
             _persist(channel, pending_writes)
