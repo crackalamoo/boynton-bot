@@ -99,6 +99,25 @@ def _estimate_tokens(messages):
     return sum(len(m.get("content", "")) // 4 for m in messages)
 
 
+def _do_summarize(conn, cur, client, model: str, channel: str, session: dict, unsummarized: list) -> dict:
+    """Perform summarization of unsummarized messages and write the new summary to the sessions table.
+    Returns the refreshed session row.
+    """
+    prior = f"Prior summary:\n{session['summary']}\n\n" if session["summary"] else ""
+    lines = "\n".join(f"{m['role'].upper()}: {m['content']}" for m in unsummarized)
+    new_summary = _complete(client, model, [{
+        "role": "user",
+        "content": f"Summarize this conversation concisely, preserving key facts and context:\n\n{prior}{lines}"
+    }])
+    cur.execute(
+        "UPDATE sessions SET summary = %s, summary_created_at = now() WHERE id = %s",
+        (new_summary, channel)
+    )
+    conn.commit()
+    cur.execute("SELECT * FROM sessions WHERE id = %s", (channel,))
+    return cur.fetchone()
+
+
 def _build_context(client, model: str, channel: str, user_message: str) -> tuple[list[dict], bool]:
     """Read DB to build the LLM context list, including inline summarization if needed.
 
@@ -135,19 +154,7 @@ def _build_context(client, model: str, channel: str, user_message: str) -> tuple
             # Note: user_message is NOT in DB yet, so no [:-1] needed
 
             if _estimate_tokens(unsummarized) > SUMMARIZATION_THRESHOLD:
-                prior = f"Prior summary:\n{session['summary']}\n\n" if session["summary"] else ""
-                lines = "\n".join(f"{m['role'].upper()}: {m['content']}" for m in unsummarized)
-                new_summary = _complete(client, model, [{
-                    "role": "user",
-                    "content": f"Summarize this conversation concisely, preserving key facts and context:\n\n{prior}{lines}"
-                }])
-                cur.execute(
-                    "UPDATE sessions SET summary = %s, summary_created_at = now() WHERE id = %s",
-                    (new_summary, channel)
-                )
-                conn.commit()
-                cur.execute("SELECT * FROM sessions WHERE id = %s", (channel,))
-                session = cur.fetchone()
+                session = _do_summarize(conn, cur, client, model, channel, session, unsummarized)
                 did_summarize = True
 
             # Build context: system prompt + optional summary + messages after summary cutoff
@@ -383,6 +390,42 @@ class Agent:
                     "UPDATE sessions SET summary = NULL, summary_created_at = NULL WHERE id = %s",
                     (channel,)
                 )
+
+    def compact(self, channel: str) -> bool:
+        """Force summarization of the current conversation for this channel.
+
+        Uses the same DB + summarization logic as the automatic path in _build_context.
+        Returns True if summarization was performed, False if there was nothing to summarize.
+        """
+        client, model = CLIENTS[0]
+        with pool.connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute("SELECT * FROM sessions WHERE id = %s", (channel,))
+                session = cur.fetchone()
+
+                if session is None:
+                    return False
+
+                # Fetch unsummarized messages (same logic as _build_context)
+                if session["summary_created_at"]:
+                    cur.execute(
+                        """SELECT role, content FROM messages
+                           WHERE session_id = %s AND created_at > %s AND role IN ('user', 'assistant')
+                           ORDER BY id ASC""",
+                        (channel, session["summary_created_at"])
+                    )
+                else:
+                    cur.execute(
+                        "SELECT role, content FROM messages WHERE session_id = %s AND role IN ('user', 'assistant') ORDER BY id ASC",
+                        (channel,)
+                    )
+                unsummarized = cur.fetchall()
+
+                if not unsummarized:
+                    return False
+
+                _do_summarize(conn, cur, client, model, channel, session, unsummarized)
+                return True
 
     def submit(self, channel: str, user_message: str, max_tokens: int | None = None) -> bool:
         """Start a background daemon thread that runs _execute and feeds self._queues[channel].

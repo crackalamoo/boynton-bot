@@ -49,5 +49,11 @@ def clear():
     return jsonify({"ok": True})
 
 
+@app.route("/api/compact", methods=["POST"])
+def compact():
+    did_compact = agent.compact("web")
+    return jsonify({"ok": True, "compacted": did_compact})
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=9174, debug=False)

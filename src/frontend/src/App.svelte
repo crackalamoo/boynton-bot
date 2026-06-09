@@ -9,13 +9,14 @@
 
   let messages = $state<Message[]>([]);
   let sending = $state(false);
+  let compacting = $state(false);
 
   async function scrollToBottom(behavior: ScrollBehavior = 'instant') {
     await tick();
     window.scrollTo({ top: document.body.scrollHeight, behavior });
   }
 
-  onMount(async () => {
+  async function loadHistory() {
     try {
       const res = await fetch('/api/history');
       if (res.ok) {
@@ -23,7 +24,9 @@
         scrollToBottom();
       }
     } catch (_) {}
-  });
+  }
+
+  onMount(loadHistory);
 
   async function sendMessage(message: string) {
     sending = true;
@@ -136,6 +139,15 @@
     await fetch('/api/clear', { method: 'POST' });
     messages = [];
   }
+
+  async function compactConversation() {
+    compacting = true;
+    try {
+      await fetch('/api/compact', { method: 'POST' });
+      await loadHistory();
+    } catch (_) {}
+    compacting = false;
+  }
 </script>
 
 <div class="main">
@@ -143,6 +155,6 @@
     <h1>Boynton Bot</h1>
     <hr />
     <MessageList {messages} />
-    <ChatInput {sending} {isMobile} onsend={sendMessage} onclear={clearConversation} />
+    <ChatInput {sending} {compacting} {isMobile} onsend={sendMessage} onclear={clearConversation} oncompact={compactConversation} />
   </article>
 </div>
