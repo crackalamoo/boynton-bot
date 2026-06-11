@@ -1,59 +1,82 @@
-from flask import Flask, request, jsonify, Response
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 from dotenv import load_dotenv
 from backend.agent import Agent
 from backend.heartbeat import start_heartbeat
 import os
+import uvicorn
 
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"))
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-app = Flask(__name__, static_folder=os.path.join(ROOT, "src/frontend/dist"), static_url_path="")
-
-agent = Agent()
-start_heartbeat(agent)
+DIST = os.path.join(ROOT, "src/frontend/dist")
 
 
-@app.route("/chat")
-def index():
-    return app.send_static_file("index.html")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    agent = Agent()
+    start_heartbeat(agent)
+    app.state.agent = agent
+    yield
 
 
-@app.route("/api/chat", methods=["POST"])
-def chat():
-    data = request.json
-    user_message = (data or {}).get("message", "").strip()
+app = FastAPI(lifespan=lifespan)
+
+app.mount("/assets", StaticFiles(directory=os.path.join(DIST, "assets")), name="assets")
+
+
+class ChatRequest(BaseModel):
+    message: str = ""
+
+
+@app.post("/api/chat")
+async def chat(body: ChatRequest, request: Request):
+    agent = request.app.state.agent
+    user_message = body.message.strip()
     if not user_message:
-        return jsonify({"error": "No message provided"}), 400
+        raise HTTPException(status_code=400, detail="No message provided")
     try:
         started = agent.submit("web", user_message)
         if not started:
-            return jsonify({"error": "Already processing"}), 409
-        return Response(
+            raise HTTPException(status_code=409, detail="Already processing")
+        return StreamingResponse(
             agent.stream("web"),
-            mimetype="text/event-stream",
+            media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+    except HTTPException:
+        raise
     except ValueError as e:
-        return jsonify({"error": str(e)}), 503
+        raise HTTPException(status_code=503, detail=str(e))
 
 
-@app.route("/api/history", methods=["GET"])
-def get_history():
-    data = agent.get_history("web")
-    return jsonify(data)
+@app.get("/api/history")
+async def get_history(request: Request):
+    agent = request.app.state.agent
+    return agent.get_history("web")
 
 
-@app.route("/api/clear", methods=["POST"])
-def clear():
+@app.post("/api/clear")
+async def clear(request: Request):
+    agent = request.app.state.agent
     agent.clear("web")
-    return jsonify({"ok": True})
+    return {"ok": True}
 
 
-@app.route("/api/compact", methods=["POST"])
-def compact():
+@app.post("/api/compact")
+async def compact(request: Request):
+    agent = request.app.state.agent
     did_compact = agent.compact("web")
-    return jsonify({"ok": True, "compacted": did_compact})
+    return {"ok": True, "compacted": did_compact}
+
+
+@app.get("/{full_path:path}")
+async def spa_fallback(full_path: str):
+    return FileResponse(os.path.join(DIST, "index.html"))
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=9174, debug=False)
+    uvicorn.run("app:app", host="0.0.0.0", port=9174)
