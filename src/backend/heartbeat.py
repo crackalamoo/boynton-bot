@@ -2,7 +2,6 @@ import os
 import threading
 import time
 import logging
-import json
 
 logger = logging.getLogger(__name__)
 
@@ -32,22 +31,6 @@ def _build_prompt(instructions: str) -> str:
     )
 
 
-def _extract_text(events: list[str]) -> str:
-    """Parse SSE token events from a collected event list to reconstruct the text."""
-    parts = []
-    for item in events:
-        try:
-            raw = item
-            if raw.startswith("data: "):
-                raw = raw[len("data: "):]
-            payload = json.loads(raw.strip())
-            if payload.get("type") == "token":
-                parts.append(payload["content"])
-        except Exception:
-            pass
-    return "".join(parts).strip()
-
-
 def _is_suppressed(full_text: str) -> bool:
     """Return True if the response is a brief HEARTBEAT_OK acknowledgement."""
     if not full_text.startswith("HEARTBEAT_OK"):
@@ -68,13 +51,7 @@ def _heartbeat_loop(agent, channel: str, interval_seconds: int):
         try:
             logger.info(f"Heartbeat firing on channel {channel!r}")
             prompt = _build_prompt(instructions)
-            events, persist = agent.run_collect(channel, prompt, max_tokens=HEARTBEAT_MAX_TOKENS)
-            full_text = _extract_text(events)
-            if _is_suppressed(full_text):
-                logger.info(f"Heartbeat suppressed (HEARTBEAT_OK) on channel {channel!r}")
-            else:
-                logger.info(f"Heartbeat alert on channel {channel!r}, persisting")
-                persist()
+            agent.run_collect(channel, prompt, max_tokens=HEARTBEAT_MAX_TOKENS, is_suppressed=_is_suppressed)
         except Exception:
             logger.exception("Heartbeat error")
 

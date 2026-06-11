@@ -141,13 +141,13 @@ def _build_context(client, model: str, channel: str, user_message: str) -> tuple
             if session["summary_created_at"]:
                 cur.execute(
                     """SELECT role, content FROM messages
-                       WHERE session_id = %s AND created_at > %s AND role IN ('user', 'assistant')
+                       WHERE session_id = %s AND created_at > %s AND role IN ('user', 'assistant') AND NOT hidden
                        ORDER BY id ASC""",
                     (channel, session["summary_created_at"])
                 )
             else:
                 cur.execute(
-                    "SELECT role, content FROM messages WHERE session_id = %s AND role IN ('user', 'assistant') ORDER BY id ASC",
+                    "SELECT role, content FROM messages WHERE session_id = %s AND role IN ('user', 'assistant') AND NOT hidden ORDER BY id ASC",
                     (channel,)
                 )
             unsummarized = cur.fetchall()
@@ -161,13 +161,13 @@ def _build_context(client, model: str, channel: str, user_message: str) -> tuple
             if session["summary_created_at"]:
                 cur.execute(
                     """SELECT role, content, tool_name, arguments FROM messages
-                       WHERE session_id = %s AND created_at > %s
+                       WHERE session_id = %s AND created_at > %s AND NOT hidden
                        ORDER BY id ASC""",
                     (channel, session["summary_created_at"])
                 )
             else:
                 cur.execute(
-                    "SELECT role, content, tool_name, arguments FROM messages WHERE session_id = %s ORDER BY id ASC",
+                    "SELECT role, content, tool_name, arguments FROM messages WHERE session_id = %s AND NOT hidden ORDER BY id ASC",
                     (channel,)
                 )
             recent = cur.fetchall()
@@ -219,34 +219,28 @@ def _execute(
     client,
     model: str,
     channel: str,
-    user_message: str,
-    pending_writes: list[dict],
+    context: list[dict],
+    did_summarize: bool,
+    is_suppressed: Callable[[str], bool] | None,
     max_tokens: int | None = None,
 ) -> Generator[str, None, None]:
     """LLM + tool loop generator.
 
-    - Reads DB to build context (via _build_context) — does NOT write to DB.
-    - Runs the full LLM + tool loop.
+    - `context` is the already-built LLM context (from _build_context), including the
+      not-yet-persisted user_message appended at the end. This function does NOT read
+      the DB.
+    - Runs the full LLM + tool loop, persisting every op immediately via `_persist_op`
+      as it happens (assistant messages, tool calls, tool results).
+    - `is_suppressed`, if provided, is called with the final round's text (only when no
+      tool was called) to decide whether the final assistant_msg should be persisted as
+      `hidden`. Only heartbeat callers pass this; normal chat passes None, so its
+      assistant messages are never hidden.
     - Yields SSE strings live as events happen.
-    - Populates pending_writes with operations to persist (in order).
-
-    pending_write op types:
-      {"op": "ensure_session", "channel": channel}
-      {"op": "user_msg", "content": user_message}
-      {"op": "assistant_msg", "content": "..."}
-      {"op": "tool_call", "tool_name": "...", "arguments": {...}}   # arguments is dict
-      {"op": "tool_result", "tool_name": "...", "content": "..."}
     """
-    context, did_summarize = _build_context(client, model, channel, user_message)
-
-    # Seed pending_writes with session + user message
-    pending_writes.append({"op": "ensure_session", "channel": channel})
-    pending_writes.append({"op": "user_msg", "content": user_message})
-
     tool_context = list(context)
-    round_content: list[str] = []
+    tool_called = False
     while True:
-        round_content = []
+        round_content: list[str] = []
         tool_calls = []
         finish_reason = "stop"
         for kind, value in _stream_round(client, model, tool_context, tools=TOOLS, max_tokens=max_tokens):
@@ -256,11 +250,13 @@ def _execute(
             else:
                 _, tool_calls, finish_reason = value
 
+        text = "".join(round_content)
+
         if finish_reason == "tool_calls" and tool_calls:
-            # Always persist the assistant turn (even empty content) so _build_context
-            # can attach tool_calls to the right message and preserve token sequence for prefix cache.
-            pending_writes.append({"op": "assistant_msg", "content": "".join(round_content)})
-            assistant_msg: dict = {"role": "assistant", "content": "".join(round_content)}
+            # Assistant messages that carry tool_calls are never hidden.
+            _persist_op(channel, {"op": "assistant_msg", "content": text, "hidden": False})
+
+            assistant_msg: dict = {"role": "assistant", "content": text}
             assistant_msg["tool_calls"] = [
                 {"id": tc["id"], "type": "function", "function": {"name": tc["name"], "arguments": tc["arguments"]}}
                 for tc in tool_calls
@@ -269,35 +265,43 @@ def _execute(
             for tc in tool_calls:
                 args = json.loads(tc["arguments"] or "{}")
                 yield "data: " + json.dumps({"type": "tool_call", "name": tc["name"], "arguments": args}) + "\n\n"
-                pending_writes.append({"op": "tool_call", "tool_name": tc["name"], "arguments": args})
+                _persist_op(channel, {"op": "tool_call", "tool_name": tc["name"], "arguments": args})
                 result = execute_tool(tc["name"], args)
                 yield "data: " + json.dumps({"type": "tool_result", "content": result}) + "\n\n"
-                pending_writes.append({"op": "tool_result", "tool_name": tc["name"], "content": result})
+                _persist_op(channel, {"op": "tool_result", "tool_name": tc["name"], "content": result})
                 tool_context.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
-        else:
-            break
+            tool_called = True
+            continue
 
-    if round_content:
-        pending_writes.append({"op": "assistant_msg", "content": "".join(round_content)})
-    yield "data: " + json.dumps({"type": "done", "summarized": did_summarize}) + "\n\n"
+        hidden = not tool_called and is_suppressed is not None and is_suppressed(text)
+        _persist_op(channel, {"op": "assistant_msg", "content": text, "hidden": hidden})
+        break
+
+    yield "data: " + json.dumps({"type": "done", "summarized": did_summarize, "tool_called": tool_called}) + "\n\n"
 
 
 def _execute_with_fallback(
     channel: str,
     user_message: str,
-    pending_writes: list[dict],
     max_tokens: int | None = None,
+    is_suppressed: Callable[[str], bool] | None = None,
 ) -> Generator[str, None, None]:
+    client0, model0 = CLIENTS[0]
+    context, did_summarize = _build_context(client0, model0, channel, user_message)
+
+    _persist_op(channel, {"op": "ensure_session", "channel": channel})
+    # Heartbeat check-in prompts are NEVER hidden — only the assistant's HEARTBEAT_OK
+    # reply can be hidden.
+    _persist_op(channel, {"op": "user_msg", "content": user_message, "hidden": False})
+
     last_exc: Exception | None = None
     for client, model in CLIENTS:
-        attempt_writes: list[dict] = []
-        gen = _execute(client, model, channel, user_message, attempt_writes, max_tokens=max_tokens)
+        gen = _execute(client, model, channel, context, did_summarize, is_suppressed, max_tokens=max_tokens)
         committed = False
         try:
             for event in gen:
                 committed = True
                 yield event
-            pending_writes.extend(attempt_writes)
             return
         except APIConnectionError as e:
             if committed:
@@ -308,39 +312,52 @@ def _execute_with_fallback(
     raise RuntimeError("No LLM servers available")
 
 
-def _persist(channel: str, pending_writes: list[dict]) -> None:
-    """Execute all pending_writes as a single DB transaction."""
+def _persist_op(channel: str, write: dict) -> None:
+    """Persist a single op immediately, in its own connection/transaction.
+
+    This is the ONE persistence primitive. Every op is written unconditionally
+    and durably the moment it happens — no buffering, no batching.
+
+    Op shapes:
+      {"op": "ensure_session", "channel": channel}
+      {"op": "user_msg", "content": "...", "hidden": bool}
+      {"op": "assistant_msg", "content": "...", "hidden": bool}
+      {"op": "tool_call", "tool_name": "...", "arguments": {...}}   # arguments is dict
+      {"op": "tool_result", "tool_name": "...", "content": "..."}
+
+    `ensure_session` uses ON CONFLICT DO NOTHING, so it is safe to call repeatedly /
+    out of order / multiple times for the same channel.
+    """
     with pool.connection() as conn:
         with conn.cursor() as cur:
-            session_id: str | None = None
-            for write in pending_writes:
-                op = write["op"]
-                if op == "ensure_session":
-                    cur.execute(
-                        "INSERT INTO sessions (id, type) VALUES (%s, %s) ON CONFLICT (id) DO NOTHING",
-                        (channel, channel)
-                    )
-                    session_id = channel
-                elif op == "user_msg":
-                    cur.execute(
-                        "INSERT INTO messages (session_id, role, content) VALUES (%s, %s, %s)",
-                        (session_id or channel, "user", write["content"])
-                    )
-                elif op == "assistant_msg":
-                    cur.execute(
-                        "INSERT INTO messages (session_id, role, content) VALUES (%s, %s, %s)",
-                        (session_id or channel, "assistant", write["content"])
-                    )
-                elif op == "tool_call":
-                    cur.execute(
-                        "INSERT INTO messages (session_id, role, tool_name, arguments) VALUES (%s, %s, %s, %s::jsonb)",
-                        (session_id or channel, "tool_call", write["tool_name"], json.dumps(write["arguments"]))
-                    )
-                elif op == "tool_result":
-                    cur.execute(
-                        "INSERT INTO messages (session_id, role, tool_name, content) VALUES (%s, %s, %s, %s)",
-                        (session_id or channel, "tool_result", write["tool_name"], write["content"])
-                    )
+            op = write["op"]
+            if op == "ensure_session":
+                cur.execute(
+                    "INSERT INTO sessions (id, type) VALUES (%s, %s) ON CONFLICT (id) DO NOTHING",
+                    (channel, channel)
+                )
+            elif op == "user_msg":
+                cur.execute(
+                    "INSERT INTO messages (session_id, role, content, hidden) VALUES (%s, %s, %s, %s)",
+                    (channel, "user", write["content"], write["hidden"])
+                )
+            elif op == "assistant_msg":
+                cur.execute(
+                    "INSERT INTO messages (session_id, role, content, hidden) VALUES (%s, %s, %s, %s)",
+                    (channel, "assistant", write["content"], write["hidden"])
+                )
+            elif op == "tool_call":
+                cur.execute(
+                    "INSERT INTO messages (session_id, role, tool_name, arguments, hidden) VALUES (%s, %s, %s, %s::jsonb, FALSE)",
+                    (channel, "tool_call", write["tool_name"], json.dumps(write["arguments"]))
+                )
+            elif op == "tool_result":
+                cur.execute(
+                    "INSERT INTO messages (session_id, role, tool_name, content, hidden) VALUES (%s, %s, %s, %s, FALSE)",
+                    (channel, "tool_result", write["tool_name"], write["content"])
+                )
+            else:
+                raise ValueError(f"Unknown op: {op!r}")
             conn.commit()
 
 
@@ -361,7 +378,7 @@ class Agent:
                 summary_created_at = session["summary_created_at"]
 
                 cur.execute(
-                    "SELECT role, content, tool_name, arguments, created_at FROM messages WHERE session_id = %s ORDER BY id ASC",
+                    "SELECT role, content, tool_name, arguments, created_at FROM messages WHERE session_id = %s AND NOT hidden ORDER BY id ASC",
                     (channel,)
                 )
                 rows = cur.fetchall()
@@ -410,13 +427,13 @@ class Agent:
                 if session["summary_created_at"]:
                     cur.execute(
                         """SELECT role, content FROM messages
-                           WHERE session_id = %s AND created_at > %s AND role IN ('user', 'assistant')
+                           WHERE session_id = %s AND created_at > %s AND role IN ('user', 'assistant') AND NOT hidden
                            ORDER BY id ASC""",
                         (channel, session["summary_created_at"])
                     )
                 else:
                     cur.execute(
-                        "SELECT role, content FROM messages WHERE session_id = %s AND role IN ('user', 'assistant') ORDER BY id ASC",
+                        "SELECT role, content FROM messages WHERE session_id = %s AND role IN ('user', 'assistant') AND NOT hidden ORDER BY id ASC",
                         (channel,)
                     )
                 unsummarized = cur.fetchall()
@@ -440,19 +457,11 @@ class Agent:
             self._queues[channel] = q
 
         def _worker():
-            pending_writes: list[dict] = []
             try:
-                for sse in _execute_with_fallback(channel, user_message, pending_writes, max_tokens=max_tokens):
+                for sse in _execute_with_fallback(channel, user_message, max_tokens=max_tokens):
                     q.put(sse)
-                _persist(channel, pending_writes)
             except Exception as e:
                 q.put("data: " + json.dumps({"type": "error", "message": str(e)}) + "\n\n")
-                # Persist whatever we managed to collect before the error
-                if pending_writes:
-                    try:
-                        _persist(channel, pending_writes)
-                    except Exception:
-                        pass
             finally:
                 with self._lock:
                     self._running.discard(channel)
@@ -479,15 +488,31 @@ class Agent:
         channel: str,
         user_message: str,
         max_tokens: int | None = None,
-    ) -> tuple[list[str], Callable[[], None]]:
+        is_suppressed: Callable[[str], bool] | None = None,
+    ) -> tuple[list[str], bool]:
         """Synchronous execution for heartbeat. Collects all SSE strings and returns
-        (events, persist_fn) where persist_fn() persists to DB.
+        (events, tool_called).
+
+        `is_suppressed`, if provided, is called with the final reply text (when no tool
+        was called) to decide whether that assistant message should be persisted as
+        hidden. Intended for heartbeat callers only.
+
+        Persistence already happens internally inside _execute_with_fallback as it
+        streams — there is nothing left to persist after this returns.
         """
-        pending_writes: list[dict] = []
-        events = list(_execute_with_fallback(channel, user_message, pending_writes, max_tokens=max_tokens))
+        events = list(_execute_with_fallback(channel, user_message, max_tokens=max_tokens, is_suppressed=is_suppressed))
 
-        def persist_fn():
-            _persist(channel, pending_writes)
+        tool_called = False
+        for item in events:
+            try:
+                raw = item
+                if raw.startswith("data: "):
+                    raw = raw[len("data: "):]
+                payload = json.loads(raw.strip())
+                if payload.get("type") == "done":
+                    tool_called = bool(payload.get("tool_called"))
+            except Exception:
+                pass
 
-        return events, persist_fn
+        return events, tool_called
 
