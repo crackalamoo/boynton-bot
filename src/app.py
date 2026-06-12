@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 from backend.agent import Agent
 from backend.heartbeat import start_heartbeat
+from backend.settings_api import router as settings_router
 import os
 import uvicorn
 
@@ -26,6 +27,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 app.mount("/assets", StaticFiles(directory=os.path.join(DIST, "assets")), name="assets")
+app.include_router(settings_router)
 
 
 class ChatRequest(BaseModel):

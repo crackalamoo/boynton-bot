@@ -3,6 +3,7 @@
   import MessageList from '../components/MessageList.svelte';
   import ChatInput from '../components/ChatInput.svelte';
   import { parseHistory } from '../lib/messageHistory.js';
+  import { navigate } from '../lib/router.svelte.js';
   import type { Message, SSEEvent } from '../lib/types.js';
 
   const isMobile = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches;
@@ -155,6 +156,6 @@
     <h1>Boynton Bot</h1>
     <hr />
     <MessageList {messages} />
-    <ChatInput {sending} {compacting} {isMobile} onsend={sendMessage} onclear={clearConversation} oncompact={compactConversation} />
+    <ChatInput {sending} {compacting} {isMobile} onsend={sendMessage} onclear={clearConversation} oncompact={compactConversation} onsettings={() => navigate('/settings')} />
   </article>
 </div>

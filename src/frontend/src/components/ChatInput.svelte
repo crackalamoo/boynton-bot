@@ -1,10 +1,11 @@
 <script lang="ts">
-  let { sending, compacting, onsend, onclear, oncompact, isMobile }: {
+  let { sending, compacting, onsend, onclear, oncompact, onsettings, isMobile }: {
     sending: boolean;
     compacting: boolean;
     onsend: (message: string) => Promise<void>;
     onclear: () => void;
     oncompact: () => Promise<void>;
+    onsettings: () => void;
     isMobile: boolean;
   } = $props();
 
@@ -57,6 +58,7 @@
   </div>
   <button id="clear-btn" onclick={onclear}>clear conversation</button>
   <button id="compact-btn" onclick={oncompact} disabled={compacting}>{compacting ? 'compacting...' : 'compact conversation'}</button>
+  <button id="settings-btn" onclick={onsettings}>settings</button>
 </div>
 
 <style>
@@ -165,5 +167,20 @@
   #compact-btn:disabled {
     opacity: 0.5;
     cursor: default;
+  }
+
+  #settings-btn {
+    font-size: 0.8rem;
+    color: var(--muted-color);
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0;
+    margin-block-start: 0.2rem;
+    display: block;
+  }
+
+  #settings-btn:hover {
+    color: var(--text-color);
   }
 </style>
