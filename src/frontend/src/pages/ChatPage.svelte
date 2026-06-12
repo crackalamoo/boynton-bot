@@ -11,6 +11,7 @@
   let messages = $state<Message[]>([]);
   let sending = $state(false);
   let compacting = $state(false);
+  let showHidden = $state(false);
 
   async function scrollToBottom(behavior: ScrollBehavior = 'instant') {
     await tick();
@@ -19,7 +20,7 @@
 
   async function loadHistory() {
     try {
-      const res = await fetch('/api/history');
+      const res = await fetch('/api/history?include_hidden=true');
       if (res.ok) {
         messages = parseHistory(await res.json());
         scrollToBottom();
@@ -155,7 +156,7 @@
   <article>
     <h1>Boynton Bot</h1>
     <hr />
-    <MessageList {messages} />
-    <ChatInput {sending} {compacting} {isMobile} onsend={sendMessage} onclear={clearConversation} oncompact={compactConversation} onsettings={() => navigate('/settings')} />
+    <MessageList {messages} {showHidden} />
+    <ChatInput {sending} {compacting} {showHidden} {isMobile} onsend={sendMessage} onclear={clearConversation} oncompact={compactConversation} onsettings={() => navigate('/settings')} ontogglehidden={() => showHidden = !showHidden} />
   </article>
 </div>

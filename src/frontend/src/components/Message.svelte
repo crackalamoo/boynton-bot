@@ -5,7 +5,7 @@
 
   marked.setOptions({ breaks: true });
 
-  let { msg }: { msg: Message } = $props();
+  let { msg, showHidden = false }: { msg: Message; showHidden?: boolean } = $props();
 </script>
 
 <div class="msg {msg.type}">
@@ -16,9 +16,9 @@
     {:else}
       {#each msg.parts as part}
         {#if part.kind === 'text'}
-          <div class="msg-content markdown">{@html marked(part.content)}</div>
+          <div class="msg-content markdown" class:hidden-part={showHidden && part.hidden}>{@html marked(part.content)}</div>
         {:else if part.kind === 'tool_call'}
-          <ToolCall {part} />
+          <ToolCall {part} {showHidden} />
         {/if}
       {/each}
       {@const lastPart = msg.parts[msg.parts.length - 1]}
@@ -98,5 +98,10 @@
     font-size: 0.9rem;
     color: var(--muted-color);
     font-style: italic;
+  }
+
+  .hidden-part {
+    color: var(--muted-color);
+    opacity: 0.7;
   }
 </style>

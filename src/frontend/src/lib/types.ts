@@ -1,9 +1,10 @@
-export type TextPart = { kind: 'text'; content: string };
+export type TextPart = { kind: 'text'; content: string; hidden?: boolean };
 export type ToolCallPart = {
   kind: 'tool_call';
   name: string;
   arguments: Record<string, unknown>;
   result: string | null;
+  hidden?: boolean;
 };
 export type Part = TextPart | ToolCallPart;
 

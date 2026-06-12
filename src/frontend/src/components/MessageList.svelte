@@ -2,15 +2,31 @@
   import Message from './Message.svelte';
   import type { Message as MessageType } from '../lib/types.js';
 
-  let { messages }: { messages: MessageType[] } = $props();
+  let { messages, showHidden }: { messages: MessageType[]; showHidden: boolean } = $props();
+
+  function visibleMessages(msgs: MessageType[]): MessageType[] {
+    if (showHidden) return msgs;
+    return msgs.filter((msg) => {
+      if (msg.type !== 'assistant') return true;
+      const originalParts = msg.parts;
+      if (originalParts.length === 0) return true;
+      const filteredParts = originalParts.filter((part) => !part.hidden);
+      return !(originalParts.length > 0 && filteredParts.length === 0);
+    });
+  }
+
+  function visibleParts(msg: MessageType): MessageType {
+    if (showHidden || msg.type !== 'assistant') return msg;
+    return { ...msg, parts: msg.parts.filter((part) => !part.hidden) };
+  }
 </script>
 
 <div id="messages">
-  {#each messages as msg}
+  {#each visibleMessages(messages) as msg}
     {#if msg.type === 'divider'}
       <div class="summary-notice">— conversation summarized —</div>
     {:else}
-      <Message {msg} />
+      <Message msg={visibleParts(msg)} {showHidden} />
     {/if}
   {/each}
 </div>

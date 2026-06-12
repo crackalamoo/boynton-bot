@@ -367,7 +367,7 @@ class Agent:
         self._lock = threading.Lock()
         self._queues: dict[str, queue.Queue[str | None]] = {}
 
-    def get_history(self, channel: str) -> dict:
+    def get_history(self, channel: str, include_hidden: bool = False) -> dict:
         with pool.connection() as conn:
             with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute("SELECT summary_created_at FROM sessions WHERE id = %s", (channel,))
@@ -377,8 +377,10 @@ class Agent:
 
                 summary_created_at = session["summary_created_at"]
 
+                hidden_clause = "" if include_hidden else "AND NOT hidden"
                 cur.execute(
-                    "SELECT role, content, tool_name, arguments, created_at FROM messages WHERE session_id = %s AND NOT hidden ORDER BY id ASC",
+                    f"SELECT role, content, tool_name, arguments, hidden, created_at FROM messages "
+                    f"WHERE session_id = %s {hidden_clause} ORDER BY id ASC",
                     (channel,)
                 )
                 rows = cur.fetchall()
@@ -389,6 +391,7 @@ class Agent:
                         "content": r["content"],
                         "tool_name": r["tool_name"],
                         "arguments": r["arguments"],
+                        "hidden": r["hidden"],
                         "created_at": r["created_at"].isoformat(),
                     }
                     for r in rows

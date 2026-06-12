@@ -5,6 +5,7 @@ interface RawMessage {
   content?: string;
   tool_name?: string;
   arguments?: Record<string, unknown>;
+  hidden?: boolean;
   created_at?: string;
 }
 
@@ -31,10 +32,10 @@ export function parseHistory(history: HistoryResponse): Message[] {
       mapped.push({ type: 'user', content: m.content ?? '' });
     } else if (m.role === 'assistant') {
       const asst = ensureAssistant();
-      if (m.content) asst.parts.push({ kind: 'text', content: m.content });
+      if (m.content) asst.parts.push({ kind: 'text', content: m.content, hidden: m.hidden });
     } else if (m.role === 'tool_call') {
       const asst = ensureAssistant();
-      asst.parts.push({ kind: 'tool_call', name: m.tool_name ?? '', arguments: m.arguments ?? {}, result: null });
+      asst.parts.push({ kind: 'tool_call', name: m.tool_name ?? '', arguments: m.arguments ?? {}, result: null, hidden: m.hidden });
     } else if (m.role === 'tool_result') {
       const asst = ensureAssistant();
       const pending = asst.parts.findLastIndex((p: Part) => p.kind === 'tool_call' && p.result === null);

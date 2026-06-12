@@ -56,9 +56,9 @@ async def chat(body: ChatRequest, request: Request):
 
 
 @app.get("/api/history")
-async def get_history(request: Request):
+async def get_history(request: Request, include_hidden: bool = False):
     agent = request.app.state.agent
-    return agent.get_history("web")
+    return agent.get_history("web", include_hidden)
 
 
 @app.post("/api/clear")
