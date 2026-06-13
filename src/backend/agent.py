@@ -89,6 +89,7 @@ def _stream_round(
 DB_URL = os.getenv("DATABASE_URL", "postgresql:///boynton_bot")
 MEMORY_DIR = os.environ["MEMORY_DIR"]  # required — filesystem path to memory files
 SUMMARIZATION_THRESHOLD = 100_000  # tokens (approximate)
+MAX_TOOL_ROUNDS = 15
 
 SYSTEM_PROMPT = "You are a personal AI assistant."
 
@@ -240,11 +241,14 @@ def _execute(
     """
     tool_context = list(context)
     tool_called = False
+    n_tool_calls = 0
     while True:
+        n_tool_calls += 1
+        tools = TOOLS if n_tool_calls <= MAX_TOOL_ROUNDS else None
         round_content: list[str] = []
         tool_calls = []
         finish_reason = "stop"
-        for kind, value in _stream_round(client, model, tool_context, tools=TOOLS, max_tokens=max_tokens):
+        for kind, value in _stream_round(client, model, tool_context, tools=tools, max_tokens=max_tokens):
             if kind == "token":
                 round_content.append(value)
                 yield "data: " + json.dumps({"type": "token", "content": value}) + "\n\n"
