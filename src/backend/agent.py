@@ -57,7 +57,8 @@ def _stream_round(
 ) -> Generator[tuple[str, Any], None, None]:
     """Stream one completion round.
 
-    Yields ("token", str) for each text delta, then ("finish", (content, tool_calls, finish_reason)).
+    Yields ("token", str) for each text delta, ("reasoning", str) for each
+    reasoning/thinking delta, then ("finish", (content, tool_calls, finish_reason)).
     """
     kwargs: dict[str, Any] = dict(
         model=model,
@@ -79,6 +80,9 @@ def _stream_round(
         if delta.content:
             accumulated_content += delta.content
             yield ("token", delta.content)
+        reasoning = getattr(delta, "reasoning_content", None)
+        if reasoning:
+            yield ("reasoning", reasoning)
         if delta.tool_calls:
             for tc in delta.tool_calls:
                 i = tc.index
@@ -298,6 +302,8 @@ def _execute(
             if kind == "token":
                 round_content.append(value)
                 yield "data: " + json.dumps({"type": "token", "content": value}) + "\n\n"
+            elif kind == "reasoning":
+                yield "data: " + json.dumps({"type": "reasoning", "content": value}) + "\n\n"
             else:
                 _, tool_calls, finish_reason = value
 

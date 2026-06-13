@@ -6,7 +6,8 @@ export type ToolCallPart = {
   result: string | null;
   hidden?: boolean;
 };
-export type Part = TextPart | ToolCallPart;
+export type ReasoningPart = { kind: 'reasoning'; content: string; hidden?: boolean };
+export type Part = TextPart | ToolCallPart | ReasoningPart;
 
 export type UserMessage = { type: 'user'; content: string };
 export type AssistantMessage = { type: 'assistant'; parts: Part[] };
@@ -17,6 +18,7 @@ export type Message = UserMessage | AssistantMessage | DividerMessage;
 export type TokenEvent = { type: 'token'; content: string };
 export type ToolCallEvent = { type: 'tool_call'; name: string; arguments: Record<string, unknown> };
 export type ToolResultEvent = { type: 'tool_result'; content: string };
+export type ReasoningEvent = { type: 'reasoning'; content?: string; summary?: string };
 export type DoneEvent = { type: 'done'; summarized?: boolean };
 export type ErrorEvent = { type: 'error'; message: string };
-export type SSEEvent = TokenEvent | ToolCallEvent | ToolResultEvent | DoneEvent | ErrorEvent;
+export type SSEEvent = TokenEvent | ToolCallEvent | ToolResultEvent | ReasoningEvent | DoneEvent | ErrorEvent;

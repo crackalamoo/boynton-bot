@@ -93,6 +93,20 @@
               return { ...m, parts };
             });
             scrollToBottom();
+          } else if (event.type === 'reasoning') {
+            const text = event.summary ?? event.content ?? '';
+            messages = messages.map((m, i) => {
+              if (i !== assistantIndex || m.type !== 'assistant') return m;
+              const parts = [...m.parts];
+              const last = parts[parts.length - 1];
+              if (last?.kind === 'reasoning') {
+                parts[parts.length - 1] = { ...last, content: last.content + text };
+              } else {
+                parts.push({ kind: 'reasoning', content: text });
+              }
+              return { ...m, parts };
+            });
+            scrollToBottom();
           } else if (event.type === 'tool_call') {
             messages = messages.map((m, i) => {
               if (i !== assistantIndex || m.type !== 'assistant') return m;

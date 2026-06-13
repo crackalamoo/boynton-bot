@@ -19,6 +19,8 @@
           <div class="msg-content markdown" class:hidden-part={showHidden && part.hidden}>{@html marked(part.content)}</div>
         {:else if part.kind === 'tool_call'}
           <ToolCall {part} {showHidden} />
+        {:else if part.kind === 'reasoning'}
+          <div class="thinking reasoning-trace" class:hidden-part={showHidden && part.hidden}>{part.content}</div>
         {/if}
       {/each}
       {@const lastPart = msg.parts[msg.parts.length - 1]}
@@ -98,6 +100,10 @@
     font-size: 0.9rem;
     color: var(--muted-color);
     font-style: italic;
+  }
+
+  .reasoning-trace {
+    white-space: pre-wrap;
   }
 
   .hidden-part {
