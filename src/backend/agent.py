@@ -8,7 +8,7 @@ import json
 import os
 import queue
 import threading
-from typing import Callable, Generator
+from typing import Any, Callable, Generator
 
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), ".env"))
 
@@ -39,27 +39,28 @@ def _build_clients() -> list[tuple[OpenAI, str]]:
 CLIENTS: list[tuple[OpenAI, str]] = _build_clients()
 
 
-def _complete(client: OpenAI, model: str, messages: list) -> str:
-    chunks = client.chat.completions.create(model=model, messages=messages, stream=True)
+def _complete(client: OpenAI, model: str, messages: list[dict[str, Any]]) -> str:
+    kwargs: dict[str, Any] = dict(model=model, messages=messages, stream=True)
+    chunks = client.chat.completions.create(**kwargs)
     return "".join(c.choices[0].delta.content or "" for c in chunks)
 
 
 def _stream_round(
     client: OpenAI,
     model: str,
-    messages: list,
+    messages: list[dict[str, Any]],
     tools=None,
     max_tokens: int | None = None,
-) -> Generator[tuple, None, None]:
+) -> Generator[tuple[str, Any], None, None]:
     """Stream one completion round.
 
     Yields ("token", str) for each text delta, then ("finish", (content, tool_calls, finish_reason)).
     """
-    kwargs = dict(model=model, messages=messages, stream=True, max_completion_tokens=max_tokens if max_tokens is not None else 2048)
+    kwargs: dict[str, Any] = dict(model=model, messages=messages, stream=True, max_completion_tokens=max_tokens if max_tokens is not None else 2048)
     if tools:
         kwargs["tools"] = tools
     accumulated_content = ""
-    accumulated_tool_calls: dict = {}
+    accumulated_tool_calls: dict[int, dict[str, str]] = {}
     finish_reason = "stop"
     for chunk in client.chat.completions.create(**kwargs):
         choice = chunk.choices[0]
@@ -99,7 +100,7 @@ def _estimate_tokens(messages):
     return sum(len(m.get("content", "")) // 4 for m in messages)
 
 
-def _do_summarize(conn, cur, client, model: str, channel: str, session: dict, unsummarized: list) -> dict:
+def _do_summarize(conn, cur, client, model: str, channel: str, session: dict[str, Any], unsummarized: list[dict[str, Any]]) -> dict[str, Any]:
     """Perform summarization of unsummarized messages and write the new summary to the sessions table.
     Returns the refreshed session row.
     """
@@ -118,7 +119,7 @@ def _do_summarize(conn, cur, client, model: str, channel: str, session: dict, un
     return cur.fetchone()
 
 
-def _build_context(client, model: str, channel: str, user_message: str) -> tuple[list[dict], bool]:
+def _build_context(client, model: str, channel: str, user_message: str) -> tuple[list[dict[str, Any]], bool]:
     """Read DB to build the LLM context list, including inline summarization if needed.
 
     Returns (context_messages, did_summarize).
@@ -184,7 +185,7 @@ def _build_context(client, model: str, channel: str, user_message: str) -> tuple
             # Reconstruct OpenAI-compatible messages including tool calls
             context_messages = []
             tc_counter = 0
-            pending_ids: list = []
+            pending_ids: list[str] = []
             for m in recent:
                 if m["role"] == "user":
                     context_messages.append({"role": "user", "content": m["content"] or ""})
@@ -219,7 +220,7 @@ def _execute(
     client,
     model: str,
     channel: str,
-    context: list[dict],
+    context: list[dict[str, Any]],
     did_summarize: bool,
     is_suppressed: Callable[[str], bool] | None,
     max_tokens: int | None = None,
@@ -256,7 +257,7 @@ def _execute(
             # Assistant messages that carry tool_calls are never hidden.
             _persist_op(channel, {"op": "assistant_msg", "content": text, "hidden": False})
 
-            assistant_msg: dict = {"role": "assistant", "content": text}
+            assistant_msg: dict[str, Any] = {"role": "assistant", "content": text}
             assistant_msg["tool_calls"] = [
                 {"id": tc["id"], "type": "function", "function": {"name": tc["name"], "arguments": tc["arguments"]}}
                 for tc in tool_calls
@@ -312,7 +313,7 @@ def _execute_with_fallback(
     raise RuntimeError("No LLM servers available")
 
 
-def _persist_op(channel: str, write: dict) -> None:
+def _persist_op(channel: str, write: dict[str, Any]) -> None:
     """Persist a single op immediately, in its own connection/transaction.
 
     This is the ONE persistence primitive. Every op is written unconditionally
@@ -367,7 +368,7 @@ class Agent:
         self._lock = threading.Lock()
         self._queues: dict[str, queue.Queue[str | None]] = {}
 
-    def get_history(self, channel: str, include_hidden: bool = False) -> dict:
+    def get_history(self, channel: str, include_hidden: bool = False) -> dict[str, Any]:
         with pool.connection() as conn:
             with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute("SELECT summary_created_at FROM sessions WHERE id = %s", (channel,))

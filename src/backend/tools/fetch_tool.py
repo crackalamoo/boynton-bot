@@ -45,12 +45,12 @@ def _extract_text(soup: BeautifulSoup, base_url: str) -> str:
 
     # Images → alt text
     for img in soup.find_all("img"):
-        alt = img.get("alt", "").strip()
+        alt = str(img.get("alt", "") or "").strip()
         img.replace_with(alt if alt else "")
 
     # Links → [text](url), skipping non-navigable hrefs
     for a in soup.find_all("a", href=True):
-        href = a["href"].strip()
+        href = str(a["href"]).strip()
         if href.startswith(("javascript:", "mailto:")):
             a.replace_with(a.get_text(strip=True))
             continue

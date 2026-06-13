@@ -1,3 +1,5 @@
+from typing import Any
+
 from .bash_tool import BASH_TOOL, execute_bash
 from .datetime_tool import DATETIME_TOOL, execute_datetime_tool
 from .email_tool import EMAIL_TOOL, execute_email_tool
@@ -10,7 +12,7 @@ from .memory_tools import (
 TOOLS = [BASH_TOOL, DATETIME_TOOL, EMAIL_TOOL, WEB_FETCH_TOOL, LIST_MEMORY_TOOL, READ_MEMORY_TOOL, WRITE_MEMORY_TOOL]
 
 
-def execute_tool(name: str, arguments: dict) -> str:
+def execute_tool(name: str, arguments: dict[str, Any]) -> str:
     if name == "bash":
         return execute_bash(arguments["command"], arguments.get("timeout", 60))
     if name == "get_current_datetime":
