@@ -6,7 +6,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 HEARTBEAT_TIMEOUT_SECONDS = int(os.getenv("HEARTBEAT_TIMEOUT_SECONDS", "600"))
-HEARTBEAT_MAX_TOKENS = int(os.getenv("HEARTBEAT_MAX_TOKENS", "512"))
+HEARTBEAT_MAX_TOKENS = int(os.getenv("HEARTBEAT_MAX_TOKENS", "768"))
 HEARTBEAT_ACK_MAX_CHARS = 300
 
 
