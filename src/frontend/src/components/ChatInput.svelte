@@ -32,7 +32,7 @@
 
   async function submit() {
     const message = inputValue.trim();
-    if (!message || sending) return;
+    if (!message) return;
     inputValue = '';
     if (textareaEl) textareaEl.style.height = 'auto';
     await onsend(message);
@@ -55,7 +55,7 @@
       onkeydown={handleKeydown}
     ></textarea>
     <div id="input-actions">
-      <button id="send-btn" onclick={submit} disabled={sending} aria-label="Send">↑</button>
+      <button id="send-btn" onclick={submit} aria-label="Send">↑</button>
     </div>
   </div>
   <button id="clear-btn" onclick={onclear}>clear conversation</button>

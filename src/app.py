@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from backend.agent import Agent
 from backend.heartbeat import start_heartbeat
 from backend.settings_api import router as settings_router
+import asyncio
 import os
 import uvicorn
 
@@ -40,19 +41,12 @@ async def chat(body: ChatRequest, request: Request):
     user_message = body.message.strip()
     if not user_message:
         raise HTTPException(status_code=400, detail="No message provided")
-    try:
-        started = agent.submit("web", user_message)
-        if not started:
-            raise HTTPException(status_code=409, detail="Already processing")
-        return StreamingResponse(
-            agent.stream("web"),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        )
-    except HTTPException:
-        raise
-    except ValueError as e:
-        raise HTTPException(status_code=503, detail=str(e))
+    sse_queue = agent.submit_chat("web", user_message)
+    return StreamingResponse(
+        agent.stream_queue(sse_queue),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/api/history")
@@ -71,7 +65,10 @@ async def clear(request: Request):
 @app.post("/api/compact")
 async def compact(request: Request):
     agent = request.app.state.agent
-    did_compact = agent.compact("web")
+    try:
+        did_compact = await asyncio.to_thread(agent.submit_compact, "web")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
     return {"ok": True, "compacted": did_compact}
 
 

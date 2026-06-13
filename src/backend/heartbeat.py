@@ -51,7 +51,7 @@ def _heartbeat_loop(agent, channel: str, interval_seconds: int):
         try:
             logger.info(f"Heartbeat firing on channel {channel!r}")
             prompt = _build_prompt(instructions)
-            agent.run_collect(channel, prompt, max_tokens=HEARTBEAT_MAX_TOKENS, is_suppressed=_is_suppressed)
+            agent.submit_heartbeat(channel, prompt, max_tokens=HEARTBEAT_MAX_TOKENS, is_suppressed=_is_suppressed)
         except Exception:
             logger.exception("Heartbeat error")
 

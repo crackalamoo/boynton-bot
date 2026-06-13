@@ -4,11 +4,14 @@ from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 from backend.tools.registry import TOOLS, execute_tool
 from backend.memory import load_soul, load_memory_index
+from backend.job_queue import Job, JobQueue, stream_queue
 import json
+import logging
 import os
 import queue
-import threading
 from typing import Any, Callable, Generator
+
+logger = logging.getLogger(__name__)
 
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), ".env"))
 
@@ -124,6 +127,43 @@ def _do_summarize(conn, cur, client, model: str, channel: str, session: dict[str
     conn.commit()
     cur.execute("SELECT * FROM sessions WHERE id = %s", (channel,))
     return cur.fetchone()
+
+
+def _compact_sync(channel: str) -> bool:
+    """Force summarization of the current conversation for this channel.
+
+    Uses the same DB + summarization logic as the automatic path in _build_context.
+    Returns True if summarization was performed, False if there was nothing to summarize.
+    """
+    client, model = CLIENTS[0]
+    with pool.connection() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute("SELECT * FROM sessions WHERE id = %s", (channel,))
+            session = cur.fetchone()
+
+            if session is None:
+                return False
+
+            # Fetch unsummarized messages (same logic as _build_context)
+            if session["summary_created_at"]:
+                cur.execute(
+                    """SELECT role, content FROM messages
+                       WHERE session_id = %s AND created_at > %s AND role IN ('user', 'assistant') AND NOT hidden
+                       ORDER BY id ASC""",
+                    (channel, session["summary_created_at"])
+                )
+            else:
+                cur.execute(
+                    "SELECT role, content FROM messages WHERE session_id = %s AND role IN ('user', 'assistant') AND NOT hidden ORDER BY id ASC",
+                    (channel,)
+                )
+            unsummarized = cur.fetchall()
+
+            if not unsummarized:
+                return False
+
+            _do_summarize(conn, cur, client, model, channel, session, unsummarized)
+            return True
 
 
 def _build_context(client, model: str, channel: str, user_message: str) -> tuple[list[dict[str, Any]], bool]:
@@ -323,6 +363,41 @@ def _execute_with_fallback(
     raise RuntimeError("No LLM servers available")
 
 
+def _run_chat_job(channel: str, job: Job) -> None:
+    """JobQueue handler for chat jobs (covers both interactive chat and heartbeat turns).
+
+    If `job.sse_queue` is set, SSE events are forwarded to it for a live response
+    (interactive chat). If it is None, the generator is simply drained (heartbeat).
+    """
+    q = job.sse_queue
+    try:
+        gen = _execute_with_fallback(channel, job.user_message or "", max_tokens=job.max_tokens, is_suppressed=job.is_suppressed)
+        if q is None:
+            for _ in gen:
+                pass
+        else:
+            for sse in gen:
+                q.put(sse)
+    except Exception as e:
+        if q is not None:
+            q.put("data: " + json.dumps({"type": "error", "message": str(e)}) + "\n\n")
+        else:
+            logger.exception(f"Heartbeat job error on channel {channel!r}")
+    finally:
+        if q is not None:
+            q.put(None)  # sentinel
+
+
+def _run_compact_job(channel: str, job: Job) -> None:
+    result_queue = job.result_queue
+    assert result_queue is not None
+    try:
+        did_compact = _compact_sync(channel)
+        result_queue.put((did_compact, None))
+    except Exception as e:
+        result_queue.put((False, e))
+
+
 def _persist_op(channel: str, write: dict[str, Any]) -> None:
     """Persist a single op immediately, in its own connection/transaction.
 
@@ -374,9 +449,7 @@ def _persist_op(channel: str, write: dict[str, Any]) -> None:
 
 class Agent:
     def __init__(self):
-        self._running: set[str] = set()
-        self._lock = threading.Lock()
-        self._queues: dict[str, queue.Queue[str | None]] = {}
+        self._jobs = JobQueue(run_chat=_run_chat_job, run_compact=_run_compact_job)
 
     def get_history(self, channel: str, include_hidden: bool = False) -> dict[str, Any]:
         with pool.connection() as conn:
@@ -422,111 +495,29 @@ class Agent:
                     (channel,)
                 )
 
-    def compact(self, channel: str) -> bool:
-        """Force summarization of the current conversation for this channel.
+    def submit_chat(self, channel: str, user_message: str, max_tokens: int | None = None) -> "queue.Queue[str | None]":
+        """Enqueue a chat job and return the queue its SSE events will be written to."""
+        return self._jobs.submit_chat(channel, user_message, max_tokens=max_tokens)
 
-        Uses the same DB + summarization logic as the automatic path in _build_context.
-        Returns True if summarization was performed, False if there was nothing to summarize.
-        """
-        client, model = CLIENTS[0]
-        with pool.connection() as conn:
-            with conn.cursor(row_factory=dict_row) as cur:
-                cur.execute("SELECT * FROM sessions WHERE id = %s", (channel,))
-                session = cur.fetchone()
-
-                if session is None:
-                    return False
-
-                # Fetch unsummarized messages (same logic as _build_context)
-                if session["summary_created_at"]:
-                    cur.execute(
-                        """SELECT role, content FROM messages
-                           WHERE session_id = %s AND created_at > %s AND role IN ('user', 'assistant') AND NOT hidden
-                           ORDER BY id ASC""",
-                        (channel, session["summary_created_at"])
-                    )
-                else:
-                    cur.execute(
-                        "SELECT role, content FROM messages WHERE session_id = %s AND role IN ('user', 'assistant') AND NOT hidden ORDER BY id ASC",
-                        (channel,)
-                    )
-                unsummarized = cur.fetchall()
-
-                if not unsummarized:
-                    return False
-
-                _do_summarize(conn, cur, client, model, channel, session, unsummarized)
-                return True
-
-    def submit(self, channel: str, user_message: str, max_tokens: int | None = None) -> bool:
-        """Start a background daemon thread that runs _execute and feeds self._queues[channel].
-
-        Returns False if the channel is already running, True otherwise.
-        """
-        with self._lock:
-            if channel in self._running:
-                return False
-            self._running.add(channel)
-            q: queue.Queue[str | None] = queue.Queue()
-            self._queues[channel] = q
-
-        def _worker():
-            try:
-                for sse in _execute_with_fallback(channel, user_message, max_tokens=max_tokens):
-                    q.put(sse)
-            except Exception as e:
-                q.put("data: " + json.dumps({"type": "error", "message": str(e)}) + "\n\n")
-            finally:
-                with self._lock:
-                    self._running.discard(channel)
-                q.put(None)  # sentinel
-
-        t = threading.Thread(target=_worker, daemon=True)
-        t.start()
-        return True
-
-    def stream(self, channel: str) -> Generator[str, None, None]:
-        """SSE generator for the web UI. Reads from _queues[channel] until None sentinel."""
-        q = self._queues.get(channel)
-        if q is None:
-            yield "data: " + json.dumps({"type": "error", "message": f"No active stream for channel {channel!r}"}) + "\n\n"
-            return
-        while True:
-            item = q.get()
-            if item is None:
-                return
-            yield item
-
-    def run_collect(
+    def submit_heartbeat(
         self,
         channel: str,
-        user_message: str,
+        prompt: str,
         max_tokens: int | None = None,
         is_suppressed: Callable[[str], bool] | None = None,
-    ) -> tuple[list[str], bool]:
-        """Synchronous execution for heartbeat. Collects all SSE strings and returns
-        (events, tool_called).
+    ) -> None:
+        """Enqueue a fire-and-forget chat job (used by the heartbeat loop)."""
+        self._jobs.submit_heartbeat(channel, prompt, max_tokens=max_tokens, is_suppressed=is_suppressed)
 
-        `is_suppressed`, if provided, is called with the final reply text (when no tool
-        was called) to decide whether that assistant message should be persisted as
-        hidden. Intended for heartbeat callers only.
+    def submit_compact(self, channel: str) -> bool:
+        """Enqueue a compact job and block until it completes.
 
-        Persistence already happens internally inside _execute_with_fallback as it
-        streams — there is nothing left to persist after this returns.
+        Returns True if summarization was performed, False if there was nothing to summarize.
+        Intended to be called via asyncio.to_thread from request handlers.
         """
-        events = list(_execute_with_fallback(channel, user_message, max_tokens=max_tokens, is_suppressed=is_suppressed))
+        return self._jobs.submit_compact(channel)
 
-        tool_called = False
-        for item in events:
-            try:
-                raw = item
-                if raw.startswith("data: "):
-                    raw = raw[len("data: "):]
-                payload = json.loads(raw.strip())
-                if payload.get("type") == "done":
-                    tool_called = bool(payload.get("tool_called"))
-            except Exception:
-                pass
-
-        return events, tool_called
+    def stream_queue(self, q: "queue.Queue[str | None]") -> Generator[str, None, None]:
+        """SSE generator that blocks on a job-specific queue until the None sentinel."""
+        return stream_queue(q)
 
