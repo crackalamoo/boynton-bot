@@ -4,6 +4,17 @@
 
   let { messages, showHidden }: { messages: MessageType[]; showHidden: boolean } = $props();
 
+  let expandedDividers: Set<number> = $state(new Set());
+
+  function toggleDivider(index: number) {
+    if (expandedDividers.has(index)) {
+      expandedDividers.delete(index);
+    } else {
+      expandedDividers.add(index);
+    }
+    expandedDividers = new Set(expandedDividers);
+  }
+
   function visibleMessages(msgs: MessageType[]): MessageType[] {
     if (showHidden) return msgs;
     return msgs.filter((msg) => {
@@ -22,9 +33,20 @@
 </script>
 
 <div id="messages">
-  {#each visibleMessages(messages) as msg}
+  {#each visibleMessages(messages) as msg, i}
     {#if msg.type === 'divider'}
-      <div class="summary-notice">— conversation summarized —</div>
+      <div
+        class="summary-notice"
+        role="button"
+        tabindex="0"
+        onclick={() => toggleDivider(i)}
+        onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && toggleDivider(i)}
+      >
+        — conversation summarized —
+      </div>
+      {#if expandedDividers.has(i) && msg.summary}
+        <div class="summary-text">{msg.summary}</div>
+      {/if}
     {:else}
       <Message msg={visibleParts(msg)} {showHidden} />
     {/if}
@@ -46,5 +68,20 @@
     text-align: center;
     font-style: italic;
     margin-block: 0.25rem;
+    cursor: pointer;
+  }
+
+  .summary-notice:hover {
+    color: var(--text-color);
+  }
+
+  .summary-text {
+    font-size: 0.8rem;
+    color: var(--muted-color);
+    white-space: pre-wrap;
+    margin-block: 0.25rem;
+    padding: 0.5rem 0.75rem;
+    border-radius: 0.5rem;
+    background: var(--button-bg);
   }
 </style>

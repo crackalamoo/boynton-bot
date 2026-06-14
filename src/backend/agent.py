@@ -460,10 +460,10 @@ class Agent:
     def get_history(self, channel: str, include_hidden: bool = False) -> dict[str, Any]:
         with pool.connection() as conn:
             with conn.cursor(row_factory=dict_row) as cur:
-                cur.execute("SELECT summary_created_at FROM sessions WHERE id = %s", (channel,))
+                cur.execute("SELECT summary, summary_created_at FROM sessions WHERE id = %s", (channel,))
                 session = cur.fetchone()
                 if session is None:
-                    return {"messages": [], "summary_created_at": None}
+                    return {"messages": [], "summary_created_at": None, "summary": None}
 
                 summary_created_at = session["summary_created_at"]
 
@@ -490,6 +490,7 @@ class Agent:
                 return {
                     "messages": messages,
                     "summary_created_at": summary_created_at.isoformat() if summary_created_at else None,
+                    "summary": session["summary"],
                 }
 
     def clear(self, channel: str):

@@ -11,7 +11,7 @@ export type Part = TextPart | ToolCallPart | ReasoningPart;
 
 export type UserMessage = { type: 'user'; content: string };
 export type AssistantMessage = { type: 'assistant'; parts: Part[] };
-export type DividerMessage = { type: 'divider' };
+export type DividerMessage = { type: 'divider'; summary?: string };
 export type Message = UserMessage | AssistantMessage | DividerMessage;
 
 // SSE event shapes from /api/chat

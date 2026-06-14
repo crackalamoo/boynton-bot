@@ -12,6 +12,7 @@ interface RawMessage {
 interface HistoryResponse {
   messages: RawMessage[];
   summary_created_at?: string;
+  summary?: string;
 }
 
 export function parseHistory(history: HistoryResponse): Message[] {
@@ -52,7 +53,7 @@ export function parseHistory(history: HistoryResponse): Message[] {
   }
 
   if (dividerInsertAfter >= 0) {
-    mapped.splice(dividerInsertAfter + 1, 0, { type: 'divider' });
+    mapped.splice(dividerInsertAfter + 1, 0, { type: 'divider', summary: history.summary });
   }
 
   return mapped;
