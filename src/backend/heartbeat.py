@@ -2,6 +2,7 @@ import os
 import threading
 import time
 import logging
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -25,8 +26,9 @@ def _load_heartbeat_instructions() -> str | None:
 
 
 def _build_prompt(instructions: str) -> str:
+    now = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
     return (
-        f"[Heartbeat check-in]\n\n{instructions}\n\n"
+        f"[Heartbeat check-in] {now}\n\n{instructions}\n\n"
         f"If nothing requires your attention, reply with HEARTBEAT_OK. "
     )
 
