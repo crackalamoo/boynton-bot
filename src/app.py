@@ -5,7 +5,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from backend.agent import Agent
-from backend.heartbeat import start_heartbeat
+from backend.cron import start_cron
 from backend.settings_api import router as settings_router
 import asyncio
 import os
@@ -20,7 +20,7 @@ DIST = os.path.join(ROOT, "src/frontend/dist")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     agent = Agent()
-    start_heartbeat(agent)
+    start_cron(agent)
     app.state.agent = agent
     yield
 

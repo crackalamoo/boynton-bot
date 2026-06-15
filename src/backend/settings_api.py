@@ -16,11 +16,6 @@ SETTINGS_KEYS = [
     "LLM_BASE_URL",
     "LLM_MODEL",
     "MEMORY_DIR",
-    "HEARTBEAT_CHANNEL",
-    "HEARTBEAT_INTERVAL_MINUTES",
-    "HEARTBEAT_TIMEOUT_SECONDS",
-    "HEARTBEAT_MAX_TOKENS",
-    "HEARTBEAT_ACK_MAX_CHARS",
     "EMAIL_ADDRESS",
     "EMAIL_PASSWORD",
     "EMAIL_SMTP_HOST",
@@ -55,11 +50,6 @@ class SettingsRequest(BaseModel):
     LLM_BASE_URL: str | None = None
     LLM_MODEL: str | None = None
     MEMORY_DIR: str | None = None
-    HEARTBEAT_CHANNEL: str | None = None
-    HEARTBEAT_INTERVAL_MINUTES: str | None = None
-    HEARTBEAT_TIMEOUT_SECONDS: str | None = None
-    HEARTBEAT_MAX_TOKENS: str | None = None
-    HEARTBEAT_ACK_MAX_CHARS: str | None = None
     EMAIL_ADDRESS: str | None = None
     EMAIL_PASSWORD: str | None = None
     EMAIL_SMTP_HOST: str | None = None

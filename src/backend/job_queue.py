@@ -14,8 +14,7 @@ class Job:
     # chat
     user_message: str | None = None
     max_tokens: int | None = None
-    is_suppressed: Callable[[str], bool] | None = None
-    sse_queue: "queue.Queue[str | None] | None" = None  # None for fire-and-forget (heartbeat)
+    sse_queue: "queue.Queue[str | None] | None" = None  # None for fire-and-forget (background jobs)
 
     # compact
     result_queue: "queue.Queue[tuple[Any, Exception | None]] | None" = None
@@ -62,14 +61,12 @@ class JobQueue:
         self._get_queue(channel).put(job)
         return sse_queue
 
-    def submit_heartbeat(
+    def submit_background(
         self,
         channel: str,
         prompt: str,
-        max_tokens: int | None = None,
-        is_suppressed: Callable[[str], bool] | None = None,
     ) -> None:
-        job = Job(kind="chat", user_message=prompt, max_tokens=max_tokens, is_suppressed=is_suppressed)
+        job = Job(kind="chat", user_message=prompt)
         self._get_queue(channel).put(job)
 
     def submit_compact(self, channel: str) -> Any:

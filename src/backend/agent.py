@@ -1,7 +1,7 @@
 from openai import OpenAI, APIConnectionError
 from dotenv import load_dotenv
 from psycopg.rows import dict_row
-from psycopg_pool import ConnectionPool
+from backend.database import pool
 from backend.tools.registry import TOOLS, execute_tool
 from backend.memory import load_soul, load_memory_index
 from backend.job_queue import Job, JobQueue, stream_queue
@@ -9,7 +9,7 @@ import json
 import logging
 import os
 import queue
-from typing import Any, Callable, Generator
+from typing import Any, Generator
 
 logger = logging.getLogger(__name__)
 
@@ -99,14 +99,11 @@ def _stream_round(
     yield ("finish", (accumulated_content, tool_calls, finish_reason))
 
 
-DB_URL = os.getenv("DATABASE_URL", "postgresql:///boynton_bot")
 MEMORY_DIR = os.environ["MEMORY_DIR"]  # required — filesystem path to memory files
 SUMMARIZATION_THRESHOLD = 100_000  # tokens (approximate)
 MAX_TOOL_ROUNDS = 15
 
 SYSTEM_PROMPT = "You are a personal AI assistant."
-
-pool = ConnectionPool(DB_URL, open=True)
 
 
 
@@ -273,7 +270,6 @@ def _execute(
     channel: str,
     context: list[dict[str, Any]],
     did_summarize: bool,
-    is_suppressed: Callable[[str], bool] | None,
     max_tokens: int | None = None,
 ) -> Generator[str, None, None]:
     """LLM + tool loop generator.
@@ -283,10 +279,6 @@ def _execute(
       the DB.
     - Runs the full LLM + tool loop, persisting every op immediately via `_persist_op`
       as it happens (assistant messages, tool calls, tool results).
-    - `is_suppressed`, if provided, is called with the final round's text (only when no
-      tool was called) to decide whether the final assistant_msg should be persisted as
-      `hidden`. Only heartbeat callers pass this; normal chat passes None, so its
-      assistant messages are never hidden.
     - Yields SSE strings live as events happen.
     """
     tool_context = list(context)
@@ -330,8 +322,7 @@ def _execute(
             tool_called = True
             continue
 
-        hidden = not tool_called and is_suppressed is not None and is_suppressed(text)
-        _persist_op(channel, {"op": "assistant_msg", "content": text, "hidden": hidden})
+        _persist_op(channel, {"op": "assistant_msg", "content": text, "hidden": False})
         break
 
     yield "data: " + json.dumps({"type": "done", "summarized": did_summarize, "tool_called": tool_called}) + "\n\n"
@@ -341,19 +332,16 @@ def _execute_with_fallback(
     channel: str,
     user_message: str,
     max_tokens: int | None = None,
-    is_suppressed: Callable[[str], bool] | None = None,
 ) -> Generator[str, None, None]:
     client0, model0 = CLIENTS[0]
     context, did_summarize = _build_context(client0, model0, channel, user_message)
 
     _persist_op(channel, {"op": "ensure_session", "channel": channel})
-    # Heartbeat check-in prompts are NEVER hidden — only the assistant's HEARTBEAT_OK
-    # reply can be hidden.
     _persist_op(channel, {"op": "user_msg", "content": user_message, "hidden": False})
 
     last_exc: Exception | None = None
     for client, model in CLIENTS:
-        gen = _execute(client, model, channel, context, did_summarize, is_suppressed, max_tokens=max_tokens)
+        gen = _execute(client, model, channel, context, did_summarize, max_tokens=max_tokens)
         committed = False
         try:
             for event in gen:
@@ -370,14 +358,14 @@ def _execute_with_fallback(
 
 
 def _run_chat_job(channel: str, job: Job) -> None:
-    """JobQueue handler for chat jobs (covers both interactive chat and heartbeat turns).
+    """JobQueue handler for chat jobs (covers both interactive chat and background turns).
 
     If `job.sse_queue` is set, SSE events are forwarded to it for a live response
-    (interactive chat). If it is None, the generator is simply drained (heartbeat).
+    (interactive chat). If it is None, the generator is simply drained (background job).
     """
     q = job.sse_queue
     try:
-        gen = _execute_with_fallback(channel, job.user_message or "", max_tokens=job.max_tokens, is_suppressed=job.is_suppressed)
+        gen = _execute_with_fallback(channel, job.user_message or "", max_tokens=job.max_tokens)
         if q is None:
             for _ in gen:
                 pass
@@ -388,7 +376,7 @@ def _run_chat_job(channel: str, job: Job) -> None:
         if q is not None:
             q.put("data: " + json.dumps({"type": "error", "message": str(e)}) + "\n\n")
         else:
-            logger.exception(f"Heartbeat job error on channel {channel!r}")
+            logger.exception(f"Background job error on channel {channel!r}")
     finally:
         if q is not None:
             q.put(None)  # sentinel
@@ -506,15 +494,13 @@ class Agent:
         """Enqueue a chat job and return the queue its SSE events will be written to."""
         return self._jobs.submit_chat(channel, user_message, max_tokens=max_tokens)
 
-    def submit_heartbeat(
+    def submit_background(
         self,
         channel: str,
         prompt: str,
-        max_tokens: int | None = None,
-        is_suppressed: Callable[[str], bool] | None = None,
     ) -> None:
-        """Enqueue a fire-and-forget chat job (used by the heartbeat loop)."""
-        self._jobs.submit_heartbeat(channel, prompt, max_tokens=max_tokens, is_suppressed=is_suppressed)
+        """Enqueue a fire-and-forget chat job (used by the cron scheduler)."""
+        self._jobs.submit_background(channel, prompt)
 
     def submit_compact(self, channel: str) -> bool:
         """Enqueue a compact job and block until it completes.

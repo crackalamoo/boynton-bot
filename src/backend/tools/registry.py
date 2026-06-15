@@ -1,6 +1,10 @@
 from typing import Any
 
 from .bash_tool import BASH_TOOL, execute_bash
+from .cron_tools import (
+    ADD_CRON_JOB_TOOL, LIST_CRON_JOBS_TOOL, REMOVE_CRON_JOB_TOOL,
+    execute_add_cron_job, execute_list_cron_jobs, execute_remove_cron_job,
+)
 from .datetime_tool import DATETIME_TOOL, execute_datetime_tool
 from .email_tool import EMAIL_TOOL, execute_email_tool
 from .fetch_tool import WEB_FETCH_TOOL, execute_web_fetch
@@ -9,7 +13,11 @@ from .memory_tools import (
     execute_list_memory, execute_read_memory, execute_write_memory,
 )
 
-TOOLS = [BASH_TOOL, DATETIME_TOOL, EMAIL_TOOL, WEB_FETCH_TOOL, LIST_MEMORY_TOOL, READ_MEMORY_TOOL, WRITE_MEMORY_TOOL]
+TOOLS = [
+    BASH_TOOL, DATETIME_TOOL, EMAIL_TOOL, WEB_FETCH_TOOL,
+    LIST_MEMORY_TOOL, READ_MEMORY_TOOL, WRITE_MEMORY_TOOL,
+    ADD_CRON_JOB_TOOL, LIST_CRON_JOBS_TOOL, REMOVE_CRON_JOB_TOOL,
+]
 
 
 def execute_tool(name: str, arguments: dict[str, Any]) -> str:
@@ -27,5 +35,17 @@ def execute_tool(name: str, arguments: dict[str, Any]) -> str:
         return execute_read_memory(arguments["path"])
     if name == "write_memory":
         return execute_write_memory(arguments["path"], arguments["content"])
+    if name == "add_cron_job":
+        return execute_add_cron_job(
+            arguments["name"],
+            arguments["channel"],
+            arguments["prompt"],
+            arguments["schedule_type"],
+            arguments["schedule_value"],
+        )
+    if name == "list_cron_jobs":
+        return execute_list_cron_jobs()
+    if name == "remove_cron_job":
+        return execute_remove_cron_job(arguments["id"])
     raise ValueError(f"Unknown tool: {name}")
 
