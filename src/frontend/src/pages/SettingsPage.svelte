@@ -9,11 +9,6 @@
     LLM_BASE_URL: string;
     LLM_MODEL: string;
     MEMORY_DIR: string;
-    HEARTBEAT_CHANNEL: string;
-    HEARTBEAT_INTERVAL_MINUTES: string;
-    HEARTBEAT_TIMEOUT_SECONDS: string;
-    HEARTBEAT_MAX_TOKENS: string;
-    HEARTBEAT_ACK_MAX_CHARS: string;
     EMAIL_ADDRESS: string;
     EMAIL_PASSWORD: string;
     EMAIL_SMTP_HOST: string;
@@ -26,8 +21,6 @@
   function emptyForm(): FormState {
     return {
       OPENAI_API_KEY: '', LLM_BASE_URL: '', LLM_MODEL: '', MEMORY_DIR: '',
-      HEARTBEAT_CHANNEL: '', HEARTBEAT_INTERVAL_MINUTES: '', HEARTBEAT_TIMEOUT_SECONDS: '',
-      HEARTBEAT_MAX_TOKENS: '', HEARTBEAT_ACK_MAX_CHARS: '',
       EMAIL_ADDRESS: '', EMAIL_PASSWORD: '', EMAIL_SMTP_HOST: '', EMAIL_SMTP_PORT: '', EMAIL_RECIPIENT: '',
     };
   }
@@ -287,15 +280,6 @@
               <span>Memory directory</span>
               <input type="text" bind:value={form.MEMORY_DIR} autocomplete="off" />
             </label>
-          </section>
-
-          <section>
-            <h2>Heartbeat</h2>
-            <label><span>Channel</span><input type="text" bind:value={form.HEARTBEAT_CHANNEL} autocomplete="off" /></label>
-            <label><span>Interval (minutes)</span><input type="text" bind:value={form.HEARTBEAT_INTERVAL_MINUTES} autocomplete="off" /></label>
-            <label><span>Timeout (seconds)</span><input type="text" bind:value={form.HEARTBEAT_TIMEOUT_SECONDS} autocomplete="off" /></label>
-            <label><span>Max tokens</span><input type="text" bind:value={form.HEARTBEAT_MAX_TOKENS} autocomplete="off" /></label>
-            <label><span>Ack max chars</span><input type="text" bind:value={form.HEARTBEAT_ACK_MAX_CHARS} autocomplete="off" /></label>
           </section>
 
           <section>
