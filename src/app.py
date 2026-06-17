@@ -3,11 +3,13 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from psycopg.rows import dict_row
 from dotenv import load_dotenv
 from backend.agent import Agent
 from backend.cron import start_cron
 from backend.database import pool
 from backend.settings_api import router as settings_router
+from backend.tools.cron_tools import execute_add_cron_job, execute_remove_cron_job
 import asyncio
 import os
 import uvicorn
@@ -81,6 +83,87 @@ async def compact(request: Request):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     return {"ok": True, "compacted": did_compact}
+
+
+class CronJobCreate(BaseModel):
+    name: str
+    channel: str
+    prompt: str
+    schedule_type: str
+    schedule_value: str
+
+
+class CronJobUpdate(BaseModel):
+    name: str | None = None
+    channel: str | None = None
+    prompt: str | None = None
+    schedule_type: str | None = None
+    schedule_value: str | None = None
+    enabled: bool | None = None
+
+
+@app.get("/api/cron-jobs")
+async def list_cron_jobs():
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute("SELECT * FROM cron_jobs ORDER BY id ASC")
+            jobs = await cur.fetchall()
+    return jobs
+
+
+@app.post("/api/cron-jobs")
+async def create_cron_job(body: CronJobCreate):
+    result = await execute_add_cron_job(
+        body.name, body.channel, body.prompt, body.schedule_type, body.schedule_value
+    )
+    if result.startswith("Error:"):
+        raise HTTPException(status_code=400, detail=result[len("Error: "):])
+    return {"ok": True}
+
+
+@app.patch("/api/cron-jobs/{job_id}")
+async def update_cron_job(job_id: int, body: CronJobUpdate):
+    from croniter import croniter
+    from backend.tools.cron_tools import _parse_at
+
+    updates = body.model_dump(exclude_none=True)
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    schedule_type = updates.get("schedule_type")
+    schedule_value = updates.get("schedule_value")
+    if schedule_type == "cron" and schedule_value:
+        try:
+            croniter(schedule_value)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"invalid cron expression: {e}")
+    elif schedule_type == "at" and schedule_value:
+        try:
+            _parse_at(schedule_value)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"invalid timestamp: {e}")
+
+    cols = ", ".join(f"{k} = %s" for k in updates)
+    vals = list(updates.values()) + [job_id]
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                f"UPDATE cron_jobs SET {cols} WHERE id = %s RETURNING id",
+                vals,
+            )
+            row = await cur.fetchone()
+            await conn.commit()
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"no cron job with id {job_id}")
+    return {"ok": True}
+
+
+@app.delete("/api/cron-jobs/{job_id}")
+async def delete_cron_job(job_id: int):
+    result = await execute_remove_cron_job(job_id)
+    if result.startswith("Error:"):
+        raise HTTPException(status_code=404, detail=result[len("Error: "):])
+    return {"ok": True}
 
 
 @app.get("/{full_path:path}")
