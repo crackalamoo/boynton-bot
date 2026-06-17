@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any
 
 from .bash_tool import BASH_TOOL, execute_bash
@@ -20,23 +21,23 @@ TOOLS = [
 ]
 
 
-def execute_tool(name: str, arguments: dict[str, Any]) -> str:
+async def execute_tool(name: str, arguments: dict[str, Any]) -> str:
     if name == "bash":
-        return execute_bash(arguments["command"], arguments.get("timeout", 60))
+        return await asyncio.to_thread(execute_bash, arguments["command"], arguments.get("timeout", 60))
     if name == "get_current_datetime":
         return execute_datetime_tool()
     if name == "send_email":
-        return execute_email_tool(arguments["subject"], arguments["body"])
+        return await asyncio.to_thread(execute_email_tool, arguments["subject"], arguments["body"])
     if name == "web_fetch":
-        return execute_web_fetch(arguments["url"])
+        return await asyncio.to_thread(execute_web_fetch, arguments["url"])
     if name == "list_memory":
-        return execute_list_memory(arguments.get("folder", ""))
+        return await asyncio.to_thread(execute_list_memory, arguments.get("folder", ""))
     if name == "read_memory":
-        return execute_read_memory(arguments["path"])
+        return await asyncio.to_thread(execute_read_memory, arguments["path"])
     if name == "write_memory":
-        return execute_write_memory(arguments["path"], arguments["content"])
+        return await asyncio.to_thread(execute_write_memory, arguments["path"], arguments["content"])
     if name == "add_cron_job":
-        return execute_add_cron_job(
+        return await execute_add_cron_job(
             arguments["name"],
             arguments["channel"],
             arguments["prompt"],
@@ -44,8 +45,8 @@ def execute_tool(name: str, arguments: dict[str, Any]) -> str:
             arguments["schedule_value"],
         )
     if name == "list_cron_jobs":
-        return execute_list_cron_jobs()
+        return await execute_list_cron_jobs()
     if name == "remove_cron_job":
-        return execute_remove_cron_job(arguments["id"])
+        return await execute_remove_cron_job(arguments["id"])
     raise ValueError(f"Unknown tool: {name}")
 

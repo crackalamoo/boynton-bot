@@ -1,4 +1,5 @@
-from openai import OpenAI, APIConnectionError
+import asyncio
+from openai import AsyncOpenAI, APIConnectionError
 from dotenv import load_dotenv
 from psycopg.rows import dict_row
 from backend.database import pool
@@ -8,8 +9,8 @@ from backend.job_queue import Job, JobQueue, stream_queue
 import json
 import logging
 import os
-import queue
-from typing import Any, Generator
+from collections.abc import AsyncGenerator
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -20,16 +21,16 @@ _LLM_API_KEYS = [k.strip() for k in (os.getenv("OPENAI_API_KEY") or "local").spl
 _LLM_MODELS = [m.strip() for m in (os.getenv("LLM_MODEL") or "gpt-5.4-mini").split(",") if m.strip()]
 
 
-def _build_clients() -> list[tuple[OpenAI, str]]:
+def _build_clients() -> list[tuple[AsyncOpenAI, str]]:
     default_model = _LLM_MODELS[0] if _LLM_MODELS else "gpt-5.4-mini"
     if not _LLM_BASE_URLS:
         key = _LLM_API_KEYS[0] if _LLM_API_KEYS else "local"
         if key == "local":
             raise ValueError("OPENAI_API_KEY not set")
-        return [(OpenAI(api_key=key), default_model)]
+        return [(AsyncOpenAI(api_key=key), default_model)]
     return [
         (
-            OpenAI(
+            AsyncOpenAI(
                 api_key=_LLM_API_KEYS[i] if i < len(_LLM_API_KEYS) else _LLM_API_KEYS[-1],
                 base_url=url,
             ),
@@ -39,22 +40,22 @@ def _build_clients() -> list[tuple[OpenAI, str]]:
     ]
 
 
-CLIENTS: list[tuple[OpenAI, str]] = _build_clients()
+CLIENTS: list[tuple[AsyncOpenAI, str]] = _build_clients()
 
 
-def _complete(client: OpenAI, model: str, messages: list[dict[str, Any]]) -> str:
+async def _complete(client: AsyncOpenAI, model: str, messages: list[dict[str, Any]]) -> str:
     kwargs: dict[str, Any] = dict(model=model, messages=messages, stream=True)
-    chunks = client.chat.completions.create(**kwargs)
-    return "".join(c.choices[0].delta.content or "" for c in chunks)
+    chunks = await client.chat.completions.create(**kwargs)
+    return "".join([c.choices[0].delta.content or "" async for c in chunks])
 
 
-def _stream_round(
-    client: OpenAI,
+async def _stream_round(
+    client: AsyncOpenAI,
     model: str,
     messages: list[dict[str, Any]],
     tools=None,
     max_tokens: int | None = None,
-) -> Generator[tuple[str, Any], None, None]:
+) -> AsyncGenerator[tuple[str, Any], None]:
     """Stream one completion round.
 
     Yields ("token", str) for each text delta, ("reasoning", str) for each
@@ -72,7 +73,8 @@ def _stream_round(
     accumulated_content = ""
     accumulated_tool_calls: dict[int, dict[str, str]] = {}
     finish_reason = "stop"
-    for chunk in client.chat.completions.create(**kwargs):
+    stream = await client.chat.completions.create(**kwargs)
+    async for chunk in stream:
         choice = chunk.choices[0]
         if choice.finish_reason:
             finish_reason = choice.finish_reason
@@ -111,74 +113,74 @@ def _estimate_tokens(messages):
     return sum(len(m.get("content", "")) // 4 for m in messages)
 
 
-def _do_summarize(conn, cur, client, model: str, channel: str, session: dict[str, Any], unsummarized: list[dict[str, Any]]) -> dict[str, Any]:
+async def _do_summarize(conn, cur, client, model: str, channel: str, session: dict[str, Any], unsummarized: list[dict[str, Any]]) -> dict[str, Any]:
     """Perform summarization of unsummarized messages and write the new summary to the sessions table.
     Returns the refreshed session row.
     """
     prior = f"Prior summary:\n{session['summary']}\n\n" if session["summary"] else ""
     lines = "\n".join(f"{m['role'].upper()}: {m['content']}" for m in unsummarized)
-    new_summary = _complete(client, model, [{
+    new_summary = await _complete(client, model, [{
         "role": "user",
         "content": f"Summarize this conversation concisely, preserving key facts and context:\n\n{prior}{lines}"
     }])
-    cur.execute(
+    await cur.execute(
         "UPDATE sessions SET summary = %s, summary_created_at = now() WHERE id = %s",
         (new_summary, channel)
     )
-    conn.commit()
-    cur.execute("SELECT * FROM sessions WHERE id = %s", (channel,))
-    return cur.fetchone()
+    await conn.commit()
+    await cur.execute("SELECT * FROM sessions WHERE id = %s", (channel,))
+    return await cur.fetchone()
 
 
-def _compact_sync(channel: str) -> bool:
+async def _compact(channel: str) -> bool:
     """Force summarization of the current conversation for this channel.
 
     Uses the same DB + summarization logic as the automatic path in _build_context.
     Returns True if summarization was performed, False if there was nothing to summarize.
     """
     client, model = CLIENTS[0]
-    with pool.connection() as conn:
-        with conn.cursor(row_factory=dict_row) as cur:
-            cur.execute("SELECT * FROM sessions WHERE id = %s", (channel,))
-            session = cur.fetchone()
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute("SELECT * FROM sessions WHERE id = %s", (channel,))
+            session = await cur.fetchone()
 
             if session is None:
                 return False
 
             # Fetch unsummarized messages (same logic as _build_context)
             if session["summary_created_at"]:
-                cur.execute(
+                await cur.execute(
                     """SELECT role, content FROM messages
                        WHERE session_id = %s AND created_at > %s AND role IN ('user', 'assistant') AND NOT hidden
                        ORDER BY id ASC""",
                     (channel, session["summary_created_at"])
                 )
             else:
-                cur.execute(
+                await cur.execute(
                     "SELECT role, content FROM messages WHERE session_id = %s AND role IN ('user', 'assistant') AND NOT hidden ORDER BY id ASC",
                     (channel,)
                 )
-            unsummarized = cur.fetchall()
+            unsummarized = await cur.fetchall()
 
             if not unsummarized:
                 return False
 
-            _do_summarize(conn, cur, client, model, channel, session, unsummarized)
+            await _do_summarize(conn, cur, client, model, channel, session, unsummarized)
             return True
 
 
-def _build_context(client, model: str, channel: str, user_message: str) -> tuple[list[dict[str, Any]], bool]:
+async def _build_context(client, model: str, channel: str, user_message: str) -> tuple[list[dict[str, Any]], bool]:
     """Read DB to build the LLM context list, including inline summarization if needed.
 
     Returns (context_messages, did_summarize).
     Does NOT write anything except a potential summarization update to sessions.
     The user_message is appended manually since it is not yet in the DB.
     """
-    with pool.connection() as conn:
-        with conn.cursor(row_factory=dict_row) as cur:
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
             # Get session for summary info
-            cur.execute("SELECT * FROM sessions WHERE id = %s", (channel,))
-            session = cur.fetchone()
+            await cur.execute("SELECT * FROM sessions WHERE id = %s", (channel,))
+            session = await cur.fetchone()
 
             # Default session if channel has no prior session
             if session is None:
@@ -188,38 +190,38 @@ def _build_context(client, model: str, channel: str, user_message: str) -> tuple
 
             # Check whether summarization is needed
             if session["summary_created_at"]:
-                cur.execute(
+                await cur.execute(
                     """SELECT role, content FROM messages
                        WHERE session_id = %s AND created_at > %s AND role IN ('user', 'assistant') AND NOT hidden
                        ORDER BY id ASC""",
                     (channel, session["summary_created_at"])
                 )
             else:
-                cur.execute(
+                await cur.execute(
                     "SELECT role, content FROM messages WHERE session_id = %s AND role IN ('user', 'assistant') AND NOT hidden ORDER BY id ASC",
                     (channel,)
                 )
-            unsummarized = cur.fetchall()
+            unsummarized = await cur.fetchall()
             # Note: user_message is NOT in DB yet, so no [:-1] needed
 
             if _estimate_tokens(unsummarized) > SUMMARIZATION_THRESHOLD:
-                session = _do_summarize(conn, cur, client, model, channel, session, unsummarized)
+                session = await _do_summarize(conn, cur, client, model, channel, session, unsummarized)
                 did_summarize = True
 
             # Build context: system prompt + optional summary + messages after summary cutoff
             if session["summary_created_at"]:
-                cur.execute(
+                await cur.execute(
                     """SELECT role, content, tool_name, arguments FROM messages
                        WHERE session_id = %s AND created_at > %s AND NOT hidden
                        ORDER BY id ASC""",
                     (channel, session["summary_created_at"])
                 )
             else:
-                cur.execute(
+                await cur.execute(
                     "SELECT role, content, tool_name, arguments FROM messages WHERE session_id = %s AND NOT hidden ORDER BY id ASC",
                     (channel,)
                 )
-            recent = cur.fetchall()
+            recent = await cur.fetchall()
 
             context = [{"role": "system", "content": SYSTEM_PROMPT}]
             soul = load_soul()
@@ -264,14 +266,14 @@ def _build_context(client, model: str, channel: str, user_message: str) -> tuple
     return context, did_summarize
 
 
-def _execute(
+async def _execute(
     client,
     model: str,
     channel: str,
     context: list[dict[str, Any]],
     did_summarize: bool,
     max_tokens: int | None = None,
-) -> Generator[str, None, None]:
+) -> AsyncGenerator[str, None]:
     """LLM + tool loop generator.
 
     - `context` is the already-built LLM context (from _build_context), including the
@@ -290,7 +292,7 @@ def _execute(
         round_content: list[str] = []
         tool_calls = []
         finish_reason = "stop"
-        for kind, value in _stream_round(client, model, tool_context, tools=tools, max_tokens=max_tokens):
+        async for kind, value in _stream_round(client, model, tool_context, tools=tools, max_tokens=max_tokens):
             if kind == "token":
                 round_content.append(value)
                 yield "data: " + json.dumps({"type": "token", "content": value}) + "\n\n"
@@ -303,7 +305,7 @@ def _execute(
 
         if finish_reason == "tool_calls" and tool_calls:
             # Assistant messages that carry tool_calls are never hidden.
-            _persist_op(channel, {"op": "assistant_msg", "content": text, "hidden": False})
+            await _persist_op(channel, {"op": "assistant_msg", "content": text, "hidden": False})
 
             assistant_msg: dict[str, Any] = {"role": "assistant", "content": text}
             assistant_msg["tool_calls"] = [
@@ -314,37 +316,37 @@ def _execute(
             for tc in tool_calls:
                 args = json.loads(tc["arguments"] or "{}")
                 yield "data: " + json.dumps({"type": "tool_call", "name": tc["name"], "arguments": args}) + "\n\n"
-                _persist_op(channel, {"op": "tool_call", "tool_name": tc["name"], "arguments": args})
-                result = execute_tool(tc["name"], args)
+                await _persist_op(channel, {"op": "tool_call", "tool_name": tc["name"], "arguments": args})
+                result = await execute_tool(tc["name"], args)
                 yield "data: " + json.dumps({"type": "tool_result", "content": result}) + "\n\n"
-                _persist_op(channel, {"op": "tool_result", "tool_name": tc["name"], "content": result})
+                await _persist_op(channel, {"op": "tool_result", "tool_name": tc["name"], "content": result})
                 tool_context.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
             tool_called = True
             continue
 
-        _persist_op(channel, {"op": "assistant_msg", "content": text, "hidden": False})
+        await _persist_op(channel, {"op": "assistant_msg", "content": text, "hidden": False})
         break
 
     yield "data: " + json.dumps({"type": "done", "summarized": did_summarize, "tool_called": tool_called}) + "\n\n"
 
 
-def _execute_with_fallback(
+async def _execute_with_fallback(
     channel: str,
     user_message: str,
     max_tokens: int | None = None,
-) -> Generator[str, None, None]:
+) -> AsyncGenerator[str, None]:
     client0, model0 = CLIENTS[0]
-    context, did_summarize = _build_context(client0, model0, channel, user_message)
+    context, did_summarize = await _build_context(client0, model0, channel, user_message)
 
-    _persist_op(channel, {"op": "ensure_session", "channel": channel})
-    _persist_op(channel, {"op": "user_msg", "content": user_message, "hidden": False})
+    await _persist_op(channel, {"op": "ensure_session", "channel": channel})
+    await _persist_op(channel, {"op": "user_msg", "content": user_message, "hidden": False})
 
     last_exc: Exception | None = None
     for client, model in CLIENTS:
         gen = _execute(client, model, channel, context, did_summarize, max_tokens=max_tokens)
         committed = False
         try:
-            for event in gen:
+            async for event in gen:
                 committed = True
                 yield event
             return
@@ -357,7 +359,7 @@ def _execute_with_fallback(
     raise RuntimeError("No LLM servers available")
 
 
-def _run_chat_job(channel: str, job: Job) -> None:
+async def _run_chat_job(channel: str, job: Job) -> None:
     """JobQueue handler for chat jobs (covers both interactive chat and background turns).
 
     If `job.sse_queue` is set, SSE events are forwarded to it for a live response
@@ -367,32 +369,32 @@ def _run_chat_job(channel: str, job: Job) -> None:
     try:
         gen = _execute_with_fallback(channel, job.user_message or "", max_tokens=job.max_tokens)
         if q is None:
-            for _ in gen:
+            async for _ in gen:
                 pass
         else:
-            for sse in gen:
-                q.put(sse)
+            async for sse in gen:
+                await q.put(sse)
     except Exception as e:
         if q is not None:
-            q.put("data: " + json.dumps({"type": "error", "message": str(e)}) + "\n\n")
+            await q.put("data: " + json.dumps({"type": "error", "message": str(e)}) + "\n\n")
         else:
             logger.exception(f"Background job error on channel {channel!r}")
     finally:
         if q is not None:
-            q.put(None)  # sentinel
+            await q.put(None)  # sentinel
 
 
-def _run_compact_job(channel: str, job: Job) -> None:
+async def _run_compact_job(channel: str, job: Job) -> None:
     result_queue = job.result_queue
     assert result_queue is not None
     try:
-        did_compact = _compact_sync(channel)
-        result_queue.put((did_compact, None))
+        did_compact = await _compact(channel)
+        await result_queue.put((did_compact, None))
     except Exception as e:
-        result_queue.put((False, e))
+        await result_queue.put((False, e))
 
 
-def _persist_op(channel: str, write: dict[str, Any]) -> None:
+async def _persist_op(channel: str, write: dict[str, Any]) -> None:
     """Persist a single op immediately, in its own connection/transaction.
 
     This is the ONE persistence primitive. Every op is written unconditionally
@@ -408,60 +410,60 @@ def _persist_op(channel: str, write: dict[str, Any]) -> None:
     `ensure_session` uses ON CONFLICT DO NOTHING, so it is safe to call repeatedly /
     out of order / multiple times for the same channel.
     """
-    with pool.connection() as conn:
-        with conn.cursor() as cur:
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
             op = write["op"]
             if op == "ensure_session":
-                cur.execute(
+                await cur.execute(
                     "INSERT INTO sessions (id, type) VALUES (%s, %s) ON CONFLICT (id) DO NOTHING",
                     (channel, channel)
                 )
             elif op == "user_msg":
-                cur.execute(
+                await cur.execute(
                     "INSERT INTO messages (session_id, role, content, hidden) VALUES (%s, %s, %s, %s)",
                     (channel, "user", write["content"], write["hidden"])
                 )
             elif op == "assistant_msg":
-                cur.execute(
+                await cur.execute(
                     "INSERT INTO messages (session_id, role, content, hidden) VALUES (%s, %s, %s, %s)",
                     (channel, "assistant", write["content"], write["hidden"])
                 )
             elif op == "tool_call":
-                cur.execute(
+                await cur.execute(
                     "INSERT INTO messages (session_id, role, tool_name, arguments, hidden) VALUES (%s, %s, %s, %s::jsonb, FALSE)",
                     (channel, "tool_call", write["tool_name"], json.dumps(write["arguments"]))
                 )
             elif op == "tool_result":
-                cur.execute(
+                await cur.execute(
                     "INSERT INTO messages (session_id, role, tool_name, content, hidden) VALUES (%s, %s, %s, %s, FALSE)",
                     (channel, "tool_result", write["tool_name"], write["content"])
                 )
             else:
                 raise ValueError(f"Unknown op: {op!r}")
-            conn.commit()
+            await conn.commit()
 
 
 class Agent:
     def __init__(self):
         self._jobs = JobQueue(run_chat=_run_chat_job, run_compact=_run_compact_job)
 
-    def get_history(self, channel: str, include_hidden: bool = False) -> dict[str, Any]:
-        with pool.connection() as conn:
-            with conn.cursor(row_factory=dict_row) as cur:
-                cur.execute("SELECT summary, summary_created_at FROM sessions WHERE id = %s", (channel,))
-                session = cur.fetchone()
+    async def get_history(self, channel: str, include_hidden: bool = False) -> dict[str, Any]:
+        async with pool.connection() as conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT summary, summary_created_at FROM sessions WHERE id = %s", (channel,))
+                session = await cur.fetchone()
                 if session is None:
                     return {"messages": [], "summary_created_at": None, "summary": None}
 
                 summary_created_at = session["summary_created_at"]
 
                 hidden_clause = "" if include_hidden else "AND NOT hidden"
-                cur.execute(
+                await cur.execute(
                     f"SELECT role, content, tool_name, arguments, hidden, created_at FROM messages "
                     f"WHERE session_id = %s {hidden_clause} ORDER BY id ASC",
                     (channel,)
                 )
-                rows = cur.fetchall()
+                rows = await cur.fetchall()
 
                 messages = [
                     {
@@ -481,36 +483,35 @@ class Agent:
                     "summary": session["summary"],
                 }
 
-    def clear(self, channel: str):
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("DELETE FROM messages WHERE session_id = %s", (channel,))
-                cur.execute(
+    async def clear(self, channel: str):
+        async with pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute("DELETE FROM messages WHERE session_id = %s", (channel,))
+                await cur.execute(
                     "UPDATE sessions SET summary = NULL, summary_created_at = NULL WHERE id = %s",
                     (channel,)
                 )
 
-    def submit_chat(self, channel: str, user_message: str, max_tokens: int | None = None) -> "queue.Queue[str | None]":
+    async def submit_chat(self, channel: str, user_message: str, max_tokens: int | None = None) -> "asyncio.Queue[str | None]":
         """Enqueue a chat job and return the queue its SSE events will be written to."""
-        return self._jobs.submit_chat(channel, user_message, max_tokens=max_tokens)
+        return await self._jobs.submit_chat(channel, user_message, max_tokens=max_tokens)
 
-    def submit_background(
+    async def submit_background(
         self,
         channel: str,
         prompt: str,
     ) -> None:
         """Enqueue a fire-and-forget chat job (used by the cron scheduler)."""
-        self._jobs.submit_background(channel, prompt)
+        await self._jobs.submit_background(channel, prompt)
 
-    def submit_compact(self, channel: str) -> bool:
-        """Enqueue a compact job and block until it completes.
+    async def submit_compact(self, channel: str) -> bool:
+        """Enqueue a compact job and wait until it completes.
 
         Returns True if summarization was performed, False if there was nothing to summarize.
-        Intended to be called via asyncio.to_thread from request handlers.
         """
-        return self._jobs.submit_compact(channel)
+        return await self._jobs.submit_compact(channel)
 
-    def stream_queue(self, q: "queue.Queue[str | None]") -> Generator[str, None, None]:
-        """SSE generator that blocks on a job-specific queue until the None sentinel."""
+    def stream_queue(self, q: "asyncio.Queue[str | None]") -> AsyncGenerator[str, None]:
+        """SSE generator that awaits a job-specific queue until the None sentinel."""
         return stream_queue(q)
 

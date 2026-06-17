@@ -87,7 +87,7 @@ def _parse_at(schedule_value: str) -> datetime:
     return parsed
 
 
-def execute_add_cron_job(
+async def execute_add_cron_job(
     name: str,
     channel: str,
     prompt: str,
@@ -107,26 +107,26 @@ def execute_add_cron_job(
     else:
         return f"Error: invalid schedule_type {schedule_type!r}, must be 'at' or 'cron'"
 
-    with pool.connection() as conn:
-        with conn.cursor(row_factory=dict_row) as cur:
-            cur.execute(
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
                 """INSERT INTO cron_jobs (name, channel, prompt, schedule_type, schedule_value)
                    VALUES (%s, %s, %s, %s, %s) RETURNING id""",
                 (name, channel, prompt, schedule_type, schedule_value),
             )
-            row = cur.fetchone()
-            conn.commit()
+            row = await cur.fetchone()
+            await conn.commit()
 
     if row is None:
         return "Error: failed to create cron job"
     return f"Created cron job {row['id']}: {name!r} on channel {channel!r} ({schedule_type} {schedule_value!r})"
 
 
-def execute_list_cron_jobs() -> str:
-    with pool.connection() as conn:
-        with conn.cursor(row_factory=dict_row) as cur:
-            cur.execute("SELECT * FROM cron_jobs ORDER BY id ASC")
-            jobs = cur.fetchall()
+async def execute_list_cron_jobs() -> str:
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute("SELECT * FROM cron_jobs ORDER BY id ASC")
+            jobs = await cur.fetchall()
 
     if not jobs:
         return "(no cron jobs)"
@@ -145,12 +145,12 @@ def execute_list_cron_jobs() -> str:
     return "\n".join(lines)
 
 
-def execute_remove_cron_job(id: int) -> str:
-    with pool.connection() as conn:
-        with conn.cursor(row_factory=dict_row) as cur:
-            cur.execute("DELETE FROM cron_jobs WHERE id = %s RETURNING id", (id,))
-            row = cur.fetchone()
-            conn.commit()
+async def execute_remove_cron_job(id: int) -> str:
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute("DELETE FROM cron_jobs WHERE id = %s RETURNING id", (id,))
+            row = await cur.fetchone()
+            await conn.commit()
 
     if row is None:
         return f"Error: no cron job with id {id}"

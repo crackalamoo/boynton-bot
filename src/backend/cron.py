@@ -1,6 +1,5 @@
+import asyncio
 import logging
-import threading
-import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -31,43 +30,43 @@ def _is_due(job: dict[str, Any], now: datetime) -> bool:
         return False
 
 
-def _run_tick(agent: Agent) -> None:
+async def _run_tick(agent: Agent) -> None:
     now = datetime.now(timezone.utc)
-    with pool.connection() as conn:
-        with conn.cursor(row_factory=dict_row) as cur:
-            cur.execute("SELECT * FROM cron_jobs WHERE enabled")
-            jobs = cur.fetchall()
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute("SELECT * FROM cron_jobs WHERE enabled")
+            jobs = await cur.fetchall()
 
             for job in jobs:
                 if not _is_due(job, now):
                     continue
 
                 logger.info(f"Cron job {job['id']} ({job['name']!r}) firing on channel {job['channel']!r}")
-                agent.submit_background(job["channel"], job["prompt"])
+                await agent.submit_background(job["channel"], job["prompt"])
 
                 if job["schedule_type"] == "at":
-                    cur.execute(
+                    await cur.execute(
                         "UPDATE cron_jobs SET last_run_at = %s, enabled = FALSE WHERE id = %s",
                         (now, job["id"]),
                     )
                 else:
-                    cur.execute(
+                    await cur.execute(
                         "UPDATE cron_jobs SET last_run_at = %s WHERE id = %s",
                         (now, job["id"]),
                     )
-                conn.commit()
+                await conn.commit()
 
 
-def _cron_loop(agent: Agent) -> None:
+async def _cron_loop(agent: Agent) -> None:
     while True:
-        time.sleep(POLL_INTERVAL_SECONDS)
+        await asyncio.sleep(POLL_INTERVAL_SECONDS)
         try:
-            _run_tick(agent)
+            await _run_tick(agent)
         except Exception:
             logger.exception("Cron tick error")
 
 
-def start_cron(agent: Agent) -> None:
-    t = threading.Thread(target=_cron_loop, args=(agent,), daemon=True)
-    t.start()
+def start_cron(agent: Agent) -> "asyncio.Task[None]":
+    task = asyncio.create_task(_cron_loop(agent))
     logger.info("Cron scheduler started")
+    return task
