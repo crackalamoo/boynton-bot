@@ -9,9 +9,9 @@
   const isMobile = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches;
 
   let messages = $state<Message[]>([]);
-  let sending = $state(false);
   let compacting = $state(false);
   let showHidden = $state(false);
+  let nextMsgId = 0;
 
   async function scrollToBottom(behavior: ScrollBehavior = 'instant') {
     await tick();
@@ -31,11 +31,19 @@
   onMount(loadHistory);
 
   async function sendMessage(message: string) {
-    sending = true;
-    messages = [...messages, { type: 'user', content: message }];
-    const assistantIndex = messages.length;
-    messages = [...messages, { type: 'assistant', parts: [] }];
+    const id = nextMsgId++;
+    messages = [...messages, { type: 'user', content: message, id, queued: true }];
     scrollToBottom();
+
+    // lazily add the assistant bubble on first content event
+    let assistantAdded = false;
+    function ensureAssistant() {
+      if (!assistantAdded) {
+        messages = messages.map((m) => (m.type === 'user' && m.id === id ? { ...m, queued: false } : m));
+        messages = [...messages, { type: 'assistant', parts: [], id }];
+        assistantAdded = true;
+      }
+    }
 
     try {
       const res = await fetch('/api/chat', {
@@ -50,11 +58,11 @@
           const data = await res.json();
           if (data.detail) errMsg = `error: ${data.detail}`;
         } catch (_) {}
-        messages = messages.map((m, i) => {
-          if (i !== assistantIndex || m.type !== 'assistant') return m;
+        ensureAssistant();
+        messages = messages.map((m) => {
+          if (m.type !== 'assistant' || m.id !== id) return m;
           return { ...m, parts: [{ kind: 'text' as const, content: errMsg }] };
         });
-        sending = false;
         return;
       }
 
@@ -80,9 +88,12 @@
             continue;
           }
 
-          if (event.type === 'token') {
-            messages = messages.map((m, i) => {
-              if (i !== assistantIndex || m.type !== 'assistant') return m;
+          if (event.type === 'queued') {
+            // job is waiting in queue — user bubble stays muted, no assistant bubble yet
+          } else if (event.type === 'token') {
+            ensureAssistant();
+            messages = messages.map((m) => {
+              if (m.type !== 'assistant' || m.id !== id) return m;
               const parts = [...m.parts];
               const last = parts[parts.length - 1];
               if (last?.kind === 'text') {
@@ -94,9 +105,10 @@
             });
             scrollToBottom();
           } else if (event.type === 'reasoning') {
+            ensureAssistant();
             const text = event.summary ?? event.content ?? '';
-            messages = messages.map((m, i) => {
-              if (i !== assistantIndex || m.type !== 'assistant') return m;
+            messages = messages.map((m) => {
+              if (m.type !== 'assistant' || m.id !== id) return m;
               const parts = [...m.parts];
               const last = parts[parts.length - 1];
               if (last?.kind === 'reasoning') {
@@ -108,14 +120,15 @@
             });
             scrollToBottom();
           } else if (event.type === 'tool_call') {
-            messages = messages.map((m, i) => {
-              if (i !== assistantIndex || m.type !== 'assistant') return m;
+            ensureAssistant();
+            messages = messages.map((m) => {
+              if (m.type !== 'assistant' || m.id !== id) return m;
               return { ...m, parts: [...m.parts, { kind: 'tool_call' as const, name: event.name, arguments: event.arguments ?? {}, result: null }] };
             });
             scrollToBottom();
           } else if (event.type === 'tool_result') {
-            messages = messages.map((m, i) => {
-              if (i !== assistantIndex || m.type !== 'assistant') return m;
+            messages = messages.map((m) => {
+              if (m.type !== 'assistant' || m.id !== id) return m;
               const parts = [...m.parts];
               const pending = parts.findLastIndex((p) => p.kind === 'tool_call' && p.result === null);
               if (pending !== -1) {
@@ -128,13 +141,15 @@
             });
           } else if (event.type === 'done') {
             if (event.summarized) {
-              const before = messages.slice(0, assistantIndex);
-              const after = messages.slice(assistantIndex);
-              messages = [...before, { type: 'divider' }, ...after];
+              const idx = messages.findIndex((m) => m.type === 'assistant' && m.id === id);
+              if (idx !== -1) {
+                messages = [...messages.slice(0, idx), { type: 'divider' }, ...messages.slice(idx)];
+              }
             }
           } else if (event.type === 'error') {
-            messages = messages.map((m, i) => {
-              if (i !== assistantIndex || m.type !== 'assistant') return m;
+            ensureAssistant();
+            messages = messages.map((m) => {
+              if (m.type !== 'assistant' || m.id !== id) return m;
               return { ...m, parts: [...m.parts, { kind: 'text' as const, content: `error: ${event.message}` }] };
             });
           }
@@ -142,13 +157,12 @@
       }
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : 'could not reach server';
-      messages = messages.map((m, i) => {
-        if (i !== assistantIndex || m.type !== 'assistant') return m;
+      ensureAssistant();
+      messages = messages.map((m) => {
+        if (m.type !== 'assistant' || m.id !== id) return m;
         return { ...m, parts: [{ kind: 'text' as const, content: `error: ${errMsg}` }] };
       });
     }
-
-    sending = false;
   }
 
   async function clearConversation() {
@@ -171,6 +185,6 @@
     <h1>Boynton Bot</h1>
     <hr />
     <MessageList {messages} {showHidden} />
-    <ChatInput {sending} {compacting} {showHidden} {isMobile} onsend={sendMessage} onclear={clearConversation} oncompact={compactConversation} onsettings={() => navigate('/settings')} ontogglehidden={() => showHidden = !showHidden} />
+    <ChatInput {compacting} {showHidden} {isMobile} onsend={sendMessage} onclear={clearConversation} oncompact={compactConversation} onsettings={() => navigate('/settings')} ontogglehidden={() => showHidden = !showHidden} />
   </article>
 </div>

@@ -62,6 +62,7 @@ class JobQueue:
 
     async def submit_chat(self, channel: str, user_message: str, max_tokens: int | None = None) -> "asyncio.Queue[str | None]":
         sse_queue: "asyncio.Queue[str | None]" = asyncio.Queue()
+        sse_queue.put_nowait('data: {"type": "queued"}\n\n')
         job = Job(kind="chat", user_message=user_message, max_tokens=max_tokens, sse_queue=sse_queue)
         q = await self._get_queue(channel)
         await q.put(job)

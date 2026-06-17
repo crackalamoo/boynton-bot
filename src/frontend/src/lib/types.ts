@@ -9,8 +9,8 @@ export type ToolCallPart = {
 export type ReasoningPart = { kind: 'reasoning'; content: string; hidden?: boolean };
 export type Part = TextPart | ToolCallPart | ReasoningPart;
 
-export type UserMessage = { type: 'user'; content: string };
-export type AssistantMessage = { type: 'assistant'; parts: Part[] };
+export type UserMessage = { type: 'user'; content: string; id?: number; queued?: boolean };
+export type AssistantMessage = { type: 'assistant'; parts: Part[]; id?: number };
 export type DividerMessage = { type: 'divider'; summary?: string };
 export type Message = UserMessage | AssistantMessage | DividerMessage;
 
@@ -21,4 +21,5 @@ export type ToolResultEvent = { type: 'tool_result'; content: string };
 export type ReasoningEvent = { type: 'reasoning'; content?: string; summary?: string };
 export type DoneEvent = { type: 'done'; summarized?: boolean };
 export type ErrorEvent = { type: 'error'; message: string };
-export type SSEEvent = TokenEvent | ToolCallEvent | ToolResultEvent | ReasoningEvent | DoneEvent | ErrorEvent;
+export type QueuedEvent = { type: 'queued' };
+export type SSEEvent = TokenEvent | ToolCallEvent | ToolResultEvent | ReasoningEvent | DoneEvent | ErrorEvent | QueuedEvent;

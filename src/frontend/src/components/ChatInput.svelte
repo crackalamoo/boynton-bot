@@ -1,6 +1,5 @@
 <script lang="ts">
-  let { sending, compacting, showHidden, onsend, onclear, oncompact, onsettings, ontogglehidden, isMobile }: {
-    sending: boolean;
+  let { compacting, showHidden, onsend, onclear, oncompact, onsettings, ontogglehidden, isMobile }: {
     compacting: boolean;
     showHidden: boolean;
     onsend: (message: string) => Promise<void>;
@@ -30,12 +29,12 @@
     }
   }
 
-  async function submit() {
+  function submit() {
     const message = inputValue.trim();
     if (!message) return;
     inputValue = '';
     if (textareaEl) textareaEl.style.height = 'auto';
-    await onsend(message);
+    onsend(message);
     if (isMobile) {
       textareaEl?.blur();
     } else {

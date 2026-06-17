@@ -29,7 +29,7 @@
       {/if}
     {/if}
   {:else if msg.type === 'user'}
-    <div class="msg-content">{msg.content}</div>
+    <div class="msg-content" class:queued={msg.queued}>{msg.content}</div>
   {/if}
 </div>
 
@@ -109,5 +109,9 @@
   .hidden-part {
     color: var(--muted-color);
     opacity: 0.7;
+  }
+
+  .queued {
+    opacity: 0.5;
   }
 </style>
