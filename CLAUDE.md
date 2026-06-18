@@ -4,7 +4,21 @@ Personal AI research assistant. Single user — no auth needed.
 
 ## Stack
 
-Flask (port 9174) + nginx (port 80) + launchd. Svelte 5 + Vite frontend. Postgres via psycopg3. OpenAI-compatible LLM API — local qwen3-8b or prod via env vars. Always use `stream=True` — local qwen breaks otherwise.
+FastAPI/uvicorn (port 9174). Svelte 5 + Vite frontend, served as static files by the app itself. Postgres via psycopg3. OpenAI-compatible LLM API — local qwen3-8b or prod via env vars.
+
+## Commands
+
+```sh
+uv run uvicorn --app-dir src app:app --host 0.0.0.0 --port 9174  # dev server
+uv run pytest                                                      # test suite
+cd src/frontend && npm run check                                   # frontend type-check
+cd src/frontend && npm run build                                   # build frontend
+```
+
+
+## Environment
+
+Required: `DATABASE_URL`, `MEMORY_DIR`, `OPENAI_API_KEY`. Optional: `LLM_BASE_URL`, `LLM_MODEL`, `EMAIL_ADDRESS`, `EMAIL_PASSWORD`, `EMAIL_RECIPIENT`. Comma-separate any of the LLM vars for multi-client failover.
 
 ## Memory
 
@@ -16,4 +30,10 @@ Flask (port 9174) + nginx (port 80) + launchd. Svelte 5 + Vite frontend. Postgre
 
 ## Tools
 
-`src/backend/tools/registry.py` contains all tools.
+`src/backend/tools/registry.py` — see `src/backend/tools/CLAUDE.md` for how to add tools.
+
+## Testing
+
+`uv run pytest` — creates an isolated Postgres DB and memory dir with a random suffix, runs all tests, then cleans up. Requires a local Postgres instance with permission to create/drop databases.
+
+Tests live next to their source in `tests/` subfolders (`src/backend/tests/`, `src/backend/tools/tests/`). New tests go in the subfolder closest to the code they test.
