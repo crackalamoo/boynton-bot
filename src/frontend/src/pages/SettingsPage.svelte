@@ -5,23 +5,23 @@
   const SECRET_PLACEHOLDER = '__SET__';
 
   type FormState = {
-    OPENAI_API_KEY: string;
-    LLM_BASE_URL: string;
-    LLM_MODEL: string;
-    MEMORY_DIR: string;
-    EMAIL_ADDRESS: string;
-    EMAIL_PASSWORD: string;
-    EMAIL_SMTP_HOST: string;
-    EMAIL_SMTP_PORT: string;
-    EMAIL_RECIPIENT: string;
+    BOYNTON_OPENAI_API_KEY: string;
+    BOYNTON_LLM_BASE_URL: string;
+    BOYNTON_LLM_MODEL: string;
+    BOYNTON_MEMORY_DIR: string;
+    BOYNTON_EMAIL_ADDRESS: string;
+    BOYNTON_EMAIL_PASSWORD: string;
+    BOYNTON_EMAIL_SMTP_HOST: string;
+    BOYNTON_EMAIL_SMTP_PORT: string;
+    BOYNTON_EMAIL_RECIPIENT: string;
   };
 
-  const SECRET_KEYS: (keyof FormState)[] = ['OPENAI_API_KEY', 'EMAIL_PASSWORD'];
+  const SECRET_KEYS: (keyof FormState)[] = ['BOYNTON_OPENAI_API_KEY', 'BOYNTON_EMAIL_PASSWORD'];
 
   function emptyForm(): FormState {
     return {
-      OPENAI_API_KEY: '', LLM_BASE_URL: '', LLM_MODEL: '', MEMORY_DIR: '',
-      EMAIL_ADDRESS: '', EMAIL_PASSWORD: '', EMAIL_SMTP_HOST: '', EMAIL_SMTP_PORT: '', EMAIL_RECIPIENT: '',
+      BOYNTON_OPENAI_API_KEY: '', BOYNTON_LLM_BASE_URL: '', BOYNTON_LLM_MODEL: '', BOYNTON_MEMORY_DIR: '',
+      BOYNTON_EMAIL_ADDRESS: '', BOYNTON_EMAIL_PASSWORD: '', BOYNTON_EMAIL_SMTP_HOST: '', BOYNTON_EMAIL_SMTP_PORT: '', BOYNTON_EMAIL_RECIPIENT: '',
     };
   }
 
@@ -262,15 +262,15 @@
             <h2>LLM</h2>
             <label>
               <span>OpenAI-compatible API key</span>
-              <input type="password" placeholder={secretConfigured.OPENAI_API_KEY ? '(configured — leave blank to keep)' : ''} bind:value={form.OPENAI_API_KEY} oninput={() => onSecretInput('OPENAI_API_KEY')} autocomplete="off" />
+              <input type="password" placeholder={secretConfigured.BOYNTON_OPENAI_API_KEY ? '(configured — leave blank to keep)' : ''} bind:value={form.BOYNTON_OPENAI_API_KEY} oninput={() => onSecretInput('BOYNTON_OPENAI_API_KEY')} autocomplete="off" />
             </label>
             <label>
               <span>LLM base URL</span>
-              <input type="text" bind:value={form.LLM_BASE_URL} autocomplete="off" />
+              <input type="text" bind:value={form.BOYNTON_LLM_BASE_URL} autocomplete="off" />
             </label>
             <label>
               <span>LLM model</span>
-              <input type="text" bind:value={form.LLM_MODEL} autocomplete="off" />
+              <input type="text" bind:value={form.BOYNTON_LLM_MODEL} autocomplete="off" />
             </label>
           </section>
 
@@ -278,20 +278,20 @@
             <h2>Memory</h2>
             <label>
               <span>Memory directory</span>
-              <input type="text" bind:value={form.MEMORY_DIR} autocomplete="off" />
+              <input type="text" bind:value={form.BOYNTON_MEMORY_DIR} autocomplete="off" />
             </label>
           </section>
 
           <section>
             <h2>Email</h2>
-            <label><span>From address</span><input type="text" bind:value={form.EMAIL_ADDRESS} autocomplete="off" /></label>
+            <label><span>From address</span><input type="text" bind:value={form.BOYNTON_EMAIL_ADDRESS} autocomplete="off" /></label>
             <label>
               <span>Password</span>
-              <input type="password" placeholder={secretConfigured.EMAIL_PASSWORD ? '(configured — leave blank to keep)' : ''} bind:value={form.EMAIL_PASSWORD} oninput={() => onSecretInput('EMAIL_PASSWORD')} autocomplete="off" />
+              <input type="password" placeholder={secretConfigured.BOYNTON_EMAIL_PASSWORD ? '(configured — leave blank to keep)' : ''} bind:value={form.BOYNTON_EMAIL_PASSWORD} oninput={() => onSecretInput('BOYNTON_EMAIL_PASSWORD')} autocomplete="off" />
             </label>
-            <label><span>SMTP host</span><input type="text" bind:value={form.EMAIL_SMTP_HOST} autocomplete="off" /></label>
-            <label><span>SMTP port</span><input type="text" bind:value={form.EMAIL_SMTP_PORT} autocomplete="off" /></label>
-            <label><span>Recipient</span><input type="text" bind:value={form.EMAIL_RECIPIENT} autocomplete="off" /></label>
+            <label><span>SMTP host</span><input type="text" bind:value={form.BOYNTON_EMAIL_SMTP_HOST} autocomplete="off" /></label>
+            <label><span>SMTP port</span><input type="text" bind:value={form.BOYNTON_EMAIL_SMTP_PORT} autocomplete="off" /></label>
+            <label><span>Recipient</span><input type="text" bind:value={form.BOYNTON_EMAIL_RECIPIENT} autocomplete="off" /></label>
           </section>
 
           {#if message}

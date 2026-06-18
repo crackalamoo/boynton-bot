@@ -29,11 +29,11 @@ EMAIL_TOOL = {
 }
 
 def execute_email_tool(subject: str, body: str) -> str:
-    address = os.environ["EMAIL_ADDRESS"]
-    password = os.environ["EMAIL_PASSWORD"]
-    host = os.environ.get("EMAIL_SMTP_HOST", "smtp.hostinger.com")
-    port = int(os.environ.get("EMAIL_SMTP_PORT", "465"))
-    recipient = os.environ["EMAIL_RECIPIENT"]
+    address = os.environ["BOYNTON_EMAIL_ADDRESS"]
+    password = os.environ["BOYNTON_EMAIL_PASSWORD"]
+    host = os.environ.get("BOYNTON_EMAIL_SMTP_HOST", "smtp.hostinger.com")
+    port = int(os.environ.get("BOYNTON_EMAIL_SMTP_PORT", "465"))
+    recipient = os.environ["BOYNTON_EMAIL_RECIPIENT"]
 
     plain_text = BeautifulSoup(body, "html.parser").get_text()
 

@@ -41,14 +41,16 @@ Set in a `.env` file at the repo root.
 
 | Variable | Required | Description |
 |---|---|---|
-| `DATABASE_URL` | yes | Postgres connection string, e.g. `postgresql:///boynton_bot` |
-| `MEMORY_DIR` | yes | Path to memory directory (can be `memory/` inside this repo, gitignored) |
-| `OPENAI_API_KEY` | yes | API key(s), comma-separated for multi-client failover |
-| `LLM_BASE_URL` | no | Base URL(s) for OpenAI-compatible API, comma-separated. Omit to use OpenAI directly. |
-| `LLM_MODEL` | no | Model name(s), comma-separated. Defaults to `gpt-5.4-mini`. |
-| `EMAIL_ADDRESS` | no | Sender address for `send_email` tool |
-| `EMAIL_PASSWORD` | no | SMTP password |
-| `EMAIL_RECIPIENT` | no | Recipient address for `send_email` tool |
+| `BOYNTON_DATABASE_URL` | yes | Postgres connection string, e.g. `postgresql:///boynton_bot` |
+| `BOYNTON_MEMORY_DIR` | yes | Path to memory directory (can be `memory/` inside this repo, gitignored) |
+| `BOYNTON_OPENAI_API_KEY` | yes | API key(s), comma-separated for multi-client failover |
+| `BOYNTON_LLM_BASE_URL` | no | Base URL(s) for OpenAI-compatible API, comma-separated. Omit to use OpenAI directly. |
+| `BOYNTON_LLM_MODEL` | no | Model name(s), comma-separated. Defaults to `gpt-5.4-mini`. |
+| `BOYNTON_EMAIL_ADDRESS` | no | Sender address for `send_email` tool |
+| `BOYNTON_EMAIL_PASSWORD` | no | SMTP password |
+| `BOYNTON_EMAIL_SMTP_HOST` | no | SMTP host (default: `smtp.hostinger.com`) |
+| `BOYNTON_EMAIL_SMTP_PORT` | no | SMTP port (default: `465`) |
+| `BOYNTON_EMAIL_RECIPIENT` | no | Recipient address for `send_email` tool |
 
 ## Testing
 

@@ -18,7 +18,7 @@ cd src/frontend && npm run build                                   # build front
 
 ## Environment
 
-Required: `DATABASE_URL`, `MEMORY_DIR`, `OPENAI_API_KEY`. Optional: `LLM_BASE_URL`, `LLM_MODEL`, `EMAIL_ADDRESS`, `EMAIL_PASSWORD`, `EMAIL_RECIPIENT`. Comma-separate any of the LLM vars for multi-client failover.
+Required: `BOYNTON_DATABASE_URL`, `BOYNTON_MEMORY_DIR`, `BOYNTON_OPENAI_API_KEY`. Optional: `BOYNTON_LLM_BASE_URL`, `BOYNTON_LLM_MODEL`, `BOYNTON_EMAIL_ADDRESS`, `BOYNTON_EMAIL_PASSWORD`, `BOYNTON_EMAIL_RECIPIENT`. Comma-separate any of the LLM vars for multi-client failover.
 
 ## Memory
 

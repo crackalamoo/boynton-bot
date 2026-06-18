@@ -16,9 +16,9 @@ logger = logging.getLogger(__name__)
 
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), ".env"))
 
-_LLM_BASE_URLS = [u.strip() for u in (os.getenv("LLM_BASE_URL") or "").split(",") if u.strip()]
-_LLM_API_KEYS = [k.strip() for k in (os.getenv("OPENAI_API_KEY") or "local").split(",") if k.strip()]
-_LLM_MODELS = [m.strip() for m in (os.getenv("LLM_MODEL") or "gpt-5.4-mini").split(",") if m.strip()]
+_LLM_BASE_URLS = [u.strip() for u in (os.getenv("BOYNTON_LLM_BASE_URL") or "").split(",") if u.strip()]
+_LLM_API_KEYS = [k.strip() for k in (os.getenv("BOYNTON_OPENAI_API_KEY") or "local").split(",") if k.strip()]
+_LLM_MODELS = [m.strip() for m in (os.getenv("BOYNTON_LLM_MODEL") or "gpt-5.4-mini").split(",") if m.strip()]
 
 
 def _build_clients() -> list[tuple[AsyncOpenAI, str]]:
@@ -26,7 +26,7 @@ def _build_clients() -> list[tuple[AsyncOpenAI, str]]:
     if not _LLM_BASE_URLS:
         key = _LLM_API_KEYS[0] if _LLM_API_KEYS else "local"
         if key == "local":
-            raise ValueError("OPENAI_API_KEY not set")
+            raise ValueError("BOYNTON_OPENAI_API_KEY not set")
         return [(AsyncOpenAI(api_key=key), default_model)]
     return [
         (
@@ -101,7 +101,7 @@ async def _stream_round(
     yield ("finish", (accumulated_content, tool_calls, finish_reason))
 
 
-MEMORY_DIR = os.environ["MEMORY_DIR"]  # required — filesystem path to memory files
+MEMORY_DIR = os.environ["BOYNTON_MEMORY_DIR"]  # required — filesystem path to memory files
 SUMMARIZATION_THRESHOLD = 100_000  # tokens (approximate)
 MAX_TOOL_ROUNDS = 15
 

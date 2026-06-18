@@ -9,21 +9,19 @@ from pydantic import BaseModel
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ENV_PATH = os.path.join(ROOT, ".env")
 
-# All settings keys known to the Settings page, and which of them hold secrets
-# that should never be sent to the client in plaintext.
 SETTINGS_KEYS = [
-    "OPENAI_API_KEY",
-    "LLM_BASE_URL",
-    "LLM_MODEL",
-    "MEMORY_DIR",
-    "EMAIL_ADDRESS",
-    "EMAIL_PASSWORD",
-    "EMAIL_SMTP_HOST",
-    "EMAIL_SMTP_PORT",
-    "EMAIL_RECIPIENT",
+    "BOYNTON_OPENAI_API_KEY",
+    "BOYNTON_LLM_BASE_URL",
+    "BOYNTON_LLM_MODEL",
+    "BOYNTON_MEMORY_DIR",
+    "BOYNTON_EMAIL_ADDRESS",
+    "BOYNTON_EMAIL_PASSWORD",
+    "BOYNTON_EMAIL_SMTP_HOST",
+    "BOYNTON_EMAIL_SMTP_PORT",
+    "BOYNTON_EMAIL_RECIPIENT",
 ]
 
-SECRET_SETTINGS_KEYS = {"OPENAI_API_KEY", "EMAIL_PASSWORD"}
+SECRET_SETTINGS_KEYS = {"BOYNTON_OPENAI_API_KEY", "BOYNTON_EMAIL_PASSWORD"}
 
 SECRET_PLACEHOLDER = "__SET__"
 
@@ -46,15 +44,15 @@ def _parse_env_file(path: str) -> dict[str, str]:
 
 
 class SettingsRequest(BaseModel):
-    OPENAI_API_KEY: str | None = None
-    LLM_BASE_URL: str | None = None
-    LLM_MODEL: str | None = None
-    MEMORY_DIR: str | None = None
-    EMAIL_ADDRESS: str | None = None
-    EMAIL_PASSWORD: str | None = None
-    EMAIL_SMTP_HOST: str | None = None
-    EMAIL_SMTP_PORT: str | None = None
-    EMAIL_RECIPIENT: str | None = None
+    BOYNTON_OPENAI_API_KEY: str | None = None
+    BOYNTON_LLM_BASE_URL: str | None = None
+    BOYNTON_LLM_MODEL: str | None = None
+    BOYNTON_MEMORY_DIR: str | None = None
+    BOYNTON_EMAIL_ADDRESS: str | None = None
+    BOYNTON_EMAIL_PASSWORD: str | None = None
+    BOYNTON_EMAIL_SMTP_HOST: str | None = None
+    BOYNTON_EMAIL_SMTP_PORT: str | None = None
+    BOYNTON_EMAIL_RECIPIENT: str | None = None
 
 
 router = APIRouter()

@@ -8,9 +8,9 @@ _BOYNTON_TEST_DB = f"boynton_bot_test_{_BOYNTON_SUFFIX}"
 _BOYNTON_TEST_DB_URL = f"postgresql:///{_BOYNTON_TEST_DB}"
 _BOYNTON_TEST_MEMORY_DIR = f"/tmp/boynton_bot_test_memory_{_BOYNTON_SUFFIX}"
 
-os.environ["DATABASE_URL"] = _BOYNTON_TEST_DB_URL
-os.environ["MEMORY_DIR"] = _BOYNTON_TEST_MEMORY_DIR
-os.environ.setdefault("OPENAI_API_KEY", "test-not-real")
+os.environ["BOYNTON_DATABASE_URL"] = _BOYNTON_TEST_DB_URL
+os.environ["BOYNTON_MEMORY_DIR"] = _BOYNTON_TEST_MEMORY_DIR
+os.environ.setdefault("BOYNTON_OPENAI_API_KEY", "test-not-real")
 
 import pytest
 import psycopg

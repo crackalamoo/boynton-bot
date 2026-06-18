@@ -7,7 +7,7 @@ Migrations are plain SQL files numbered sequentially: `0001_initial_schema.sql`,
 Run each file manually against your Postgres DB in order:
 
 ```sh
-psql $DATABASE_URL < src/backend/db/0005_your_migration.sql
+psql $BOYNTON_DATABASE_URL < src/backend/db/0005_your_migration.sql
 ```
 
 There is no migration runner — apply them yourself and track which ones have run. Be careful to avoid re-applying migrations that have already been applied in a prior session.

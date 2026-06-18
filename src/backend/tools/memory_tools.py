@@ -5,7 +5,7 @@ MEMORY_DIR = None  # resolved at call time from env
 
 
 def _get_memory_dir() -> str:
-    return os.environ["MEMORY_DIR"]
+    return os.environ["BOYNTON_MEMORY_DIR"]
 
 
 def _safe_resolve(rel_path: str) -> str:
