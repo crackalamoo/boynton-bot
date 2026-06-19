@@ -44,9 +44,8 @@ CLIENTS: list[tuple[AsyncOpenAI, str]] = _build_clients()
 
 
 async def _complete(client: AsyncOpenAI, model: str, messages: list[dict[str, Any]]) -> str:
-    kwargs: dict[str, Any] = dict(model=model, messages=messages, stream=True)
-    chunks = await client.chat.completions.create(**kwargs)
-    return "".join([c.choices[0].delta.content or "" async for c in chunks])
+    response = await client.chat.completions.create(model=model, messages=messages, stream=False)
+    return response.choices[0].message.content or ""
 
 
 async def _stream_round(
