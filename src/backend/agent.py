@@ -101,7 +101,7 @@ async def _stream_round(
 
 
 MEMORY_DIR = os.environ["BOYNTON_MEMORY_DIR"]  # required — filesystem path to memory files
-SUMMARIZATION_THRESHOLD = 100_000  # tokens (approximate)
+SUMMARIZATION_THRESHOLD = 50_000  # tokens (approximate)
 MAX_TOOL_ROUNDS = 15
 
 SYSTEM_PROMPT = "You are a personal AI assistant."
@@ -109,7 +109,7 @@ SYSTEM_PROMPT = "You are a personal AI assistant."
 
 
 def _estimate_tokens(messages):
-    return sum(len(m.get("content", "")) // 4 for m in messages)
+    return sum((len(m.get("content") or "") + len(m.get("arguments") or "")) // 4 for m in messages)
 
 
 async def _do_summarize(conn, cur, client, model: str, channel: str, session: dict[str, Any], unsummarized: list[dict[str, Any]]) -> dict[str, Any]:
@@ -149,14 +149,14 @@ async def _compact(channel: str) -> bool:
             # Fetch unsummarized messages (same logic as _build_context)
             if session["summary_created_at"]:
                 await cur.execute(
-                    """SELECT role, content FROM messages
-                       WHERE session_id = %s AND created_at > %s AND role IN ('user', 'assistant') AND NOT hidden
+                    """SELECT role, content, arguments FROM messages
+                       WHERE session_id = %s AND created_at > %s AND NOT hidden
                        ORDER BY id ASC""",
                     (channel, session["summary_created_at"])
                 )
             else:
                 await cur.execute(
-                    "SELECT role, content FROM messages WHERE session_id = %s AND role IN ('user', 'assistant') AND NOT hidden ORDER BY id ASC",
+                    "SELECT role, content, arguments FROM messages WHERE session_id = %s AND NOT hidden ORDER BY id ASC",
                     (channel,)
                 )
             unsummarized = await cur.fetchall()
@@ -190,14 +190,14 @@ async def _build_context(client, model: str, channel: str, user_message: str) ->
             # Check whether summarization is needed
             if session["summary_created_at"]:
                 await cur.execute(
-                    """SELECT role, content FROM messages
-                       WHERE session_id = %s AND created_at > %s AND role IN ('user', 'assistant') AND NOT hidden
+                    """SELECT role, content, arguments FROM messages
+                       WHERE session_id = %s AND created_at > %s AND NOT hidden
                        ORDER BY id ASC""",
                     (channel, session["summary_created_at"])
                 )
             else:
                 await cur.execute(
-                    "SELECT role, content FROM messages WHERE session_id = %s AND role IN ('user', 'assistant') AND NOT hidden ORDER BY id ASC",
+                    "SELECT role, content, arguments FROM messages WHERE session_id = %s AND NOT hidden ORDER BY id ASC",
                     (channel,)
                 )
             unsummarized = await cur.fetchall()
