@@ -1,6 +1,7 @@
 import type { Message, Part } from './types.js';
 
 interface RawMessage {
+  id?: number;
   role: 'user' | 'assistant' | 'tool_call' | 'tool_result';
   content?: string;
   tool_name?: string;
@@ -34,6 +35,10 @@ export function parseHistory(history: HistoryResponse): Message[] {
     } else if (m.role === 'assistant') {
       const asst = ensureAssistant();
       if (m.content) asst.parts.push({ kind: 'text', content: m.content, hidden: m.hidden });
+      // Every assistant row in this grouped turn overwrites dbId, so by the time the
+      // group closes (next 'user' row) it holds the id of the *last* one — which is
+      // exactly the final, no-tool_calls reply row feedback should attach to.
+      if (m.id !== undefined) asst.dbId = m.id;
     } else if (m.role === 'tool_call') {
       const asst = ensureAssistant();
       asst.parts.push({ kind: 'tool_call', name: m.tool_name ?? '', arguments: m.arguments ?? {}, result: null, hidden: m.hidden });

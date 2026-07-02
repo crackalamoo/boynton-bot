@@ -140,6 +140,11 @@
               return { ...m, parts };
             });
           } else if (event.type === 'done') {
+            if (event.message_id !== undefined) {
+              messages = messages.map((m) =>
+                m.type === 'assistant' && m.id === id ? { ...m, dbId: event.message_id } : m
+              );
+            }
             if (event.summarized) {
               const idx = messages.findIndex((m) => m.type === 'assistant' && m.id === id);
               if (idx !== -1) {

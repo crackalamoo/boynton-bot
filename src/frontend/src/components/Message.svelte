@@ -1,6 +1,7 @@
 <script lang="ts">
   import { marked } from 'marked';
   import ToolCall from './ToolCall.svelte';
+  import Feedback from './Feedback.svelte';
   import type { Message } from '../lib/types.js';
 
   marked.setOptions({ breaks: true });
@@ -26,6 +27,8 @@
       {@const lastPart = msg.parts[msg.parts.length - 1]}
       {#if lastPart.kind === 'tool_call' && lastPart.result !== null}
         <div class="thinking">thinking…</div>
+      {:else if msg.dbId !== undefined}
+        <Feedback messageId={msg.dbId} />
       {/if}
     {/if}
   {:else if msg.type === 'user'}

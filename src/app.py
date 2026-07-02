@@ -10,6 +10,7 @@ from backend.cron import start_cron
 from backend.database import pool
 from backend.settings_api import router as settings_router
 from backend.tools.cron_tools import execute_add_cron_job, execute_remove_cron_job
+from typing import Any
 import asyncio
 import os
 import uvicorn
@@ -83,6 +84,66 @@ async def compact(request: Request):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     return {"ok": True, "compacted": did_compact}
+
+
+class FeedbackCreate(BaseModel):
+    message_id: int
+    label: str  # "up" | "down"
+
+
+class FeedbackNote(BaseModel):
+    note: str
+
+
+class FeedbackResolve(BaseModel):
+    action: str  # "approve" | "reject"
+    correction: list[dict[str, Any]] | None = None
+
+
+@app.post("/api/feedback")
+async def create_feedback(body: FeedbackCreate, request: Request):
+    if body.label not in ("up", "down"):
+        raise HTTPException(status_code=400, detail="label must be 'up' or 'down'")
+    agent = request.app.state.agent
+    try:
+        return await agent.record_feedback(body.message_id, body.label)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/feedback/message/{message_id}")
+async def get_feedback_for_message(message_id: int, request: Request):
+    agent = request.app.state.agent
+    return await agent.get_feedback_for_message(message_id)
+
+
+@app.get("/api/feedback/{example_id}")
+async def get_feedback(example_id: int, request: Request):
+    agent = request.app.state.agent
+    row = await agent.get_feedback(example_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="no such feedback")
+    return row
+
+
+@app.post("/api/feedback/{example_id}/note")
+async def add_feedback_note(example_id: int, body: FeedbackNote, request: Request):
+    agent = request.app.state.agent
+    try:
+        return await agent.add_feedback_note(example_id, body.note)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/api/feedback/{example_id}/resolve")
+async def resolve_feedback(example_id: int, body: FeedbackResolve, request: Request):
+    if body.action not in ("approve", "reject"):
+        raise HTTPException(status_code=400, detail="action must be 'approve' or 'reject'")
+    agent = request.app.state.agent
+    try:
+        return await agent.resolve_feedback(example_id, body.action, body.correction)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 class CronJobCreate(BaseModel):

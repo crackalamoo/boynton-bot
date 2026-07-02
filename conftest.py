@@ -22,6 +22,7 @@ _BOYNTON_MIGRATION_FILES = [
     "0002_add_tool_calls.sql",
     "0003_add_hidden_flag.sql",
     "0004_add_cron_jobs.sql",
+    "0005_add_training_examples.sql",
 ]
 
 
