@@ -302,7 +302,10 @@ async def _execute(
 
         text = "".join(round_content)
 
-        if finish_reason == "tool_calls" and tool_calls:
+        # Tool calls are handled whenever present, regardless of finish_reason —
+        # a "length" round can still carry a complete, valid tool call alongside
+        # trailing text that got cut off elsewhere. Validity is judged per call.
+        if tool_calls:
             # Assistant messages that carry tool_calls are never hidden.
             await _persist_op(channel, {"op": "assistant_msg", "content": text, "hidden": False})
 
@@ -313,10 +316,36 @@ async def _execute(
             ]
             tool_context.append(assistant_msg)
             for tc in tool_calls:
-                args = json.loads(tc["arguments"] or "{}")
+                # A malformed/truncated call (qwen's blank-name marker, or a
+                # gpt-5.4-mini call whose arguments got cut off mid-JSON) must
+                # not silently become "called with no arguments" — capture the
+                # parse failure and surface it as an invalid call below, same
+                # as any other validation failure.
+                parse_error: Exception | None = None
+                try:
+                    args = json.loads(tc["arguments"] or "{}")
+                except json.JSONDecodeError as e:
+                    args = {}
+                    parse_error = e
+
                 yield "data: " + json.dumps({"type": "tool_call", "name": tc["name"], "arguments": args}) + "\n\n"
                 await _persist_op(channel, {"op": "tool_call", "tool_name": tc["name"], "arguments": args})
-                result = await execute_tool(tc["name"], args)
+                try:
+                    if parse_error is not None:
+                        raise ValueError(f"arguments were not valid JSON ({parse_error})")
+                    if not tc["name"]:
+                        raise ValueError(
+                            "no tool name/arguments could be recovered — the tool call was "
+                            "malformed or got cut off before it finished generating"
+                        )
+                    result = await execute_tool(tc["name"], args)
+                except (ValueError, KeyError, TypeError) as e:
+                    # An unknown/blank tool name (malformed or truncated
+                    # generation) or a missing/wrong-type argument. Report it
+                    # back to the model as a normal tool result instead of
+                    # crashing the turn — it has what it needs to retry with
+                    # a corrected call.
+                    result = f"Invalid tool call: {e}"
                 yield "data: " + json.dumps({"type": "tool_result", "content": result}) + "\n\n"
                 await _persist_op(channel, {"op": "tool_result", "tool_name": tc["name"], "content": result})
                 tool_context.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
