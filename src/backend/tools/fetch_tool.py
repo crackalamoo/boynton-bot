@@ -34,21 +34,15 @@ def _extract_text(soup: BeautifulSoup, base_url: str) -> str:
     for tag in soup.find_all(["script", "style"]):
         tag.decompose()
 
-    # Tables → TSV
-    for table in soup.find_all("table"):
-        rows = []
-        for tr in table.find_all("tr"):
-            cells = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
-            if any(cells):
-                rows.append("\t".join(cells))
-        table.replace_with("\n" + "\n".join(rows) + "\n")
-
     # Images → alt text
     for img in soup.find_all("img"):
         alt = str(img.get("alt", "") or "").strip()
         img.replace_with(alt if alt else "")
 
-    # Links → [text](url), skipping non-navigable hrefs
+    # Links → [text](url), skipping non-navigable hrefs. Done before the
+    # table pass below so links nested inside table cells (e.g. HN's
+    # front-page story listing) survive as markdown instead of being
+    # silently dropped by td.get_text().
     for a in soup.find_all("a", href=True):
         href = str(a["href"]).strip()
         if href.startswith(("javascript:", "mailto:")):
@@ -57,6 +51,15 @@ def _extract_text(soup: BeautifulSoup, base_url: str) -> str:
         href = urljoin(base_url, href)
         text = a.get_text(strip=True)
         a.replace_with(f"[{text}]({href})" if text else href)
+
+    # Tables → TSV
+    for table in soup.find_all("table"):
+        rows = []
+        for tr in table.find_all("tr"):
+            cells = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
+            if any(cells):
+                rows.append("\t".join(cells))
+        table.replace_with("\n" + "\n".join(rows) + "\n")
 
     text = soup.get_text(separator="\n", strip=True)
     text = re.sub(r"\n{3,}", "\n\n", text)
