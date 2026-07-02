@@ -142,7 +142,9 @@
           } else if (event.type === 'done') {
             if (event.message_id !== undefined) {
               messages = messages.map((m) =>
-                m.type === 'assistant' && m.id === id ? { ...m, dbId: event.message_id } : m
+                m.type === 'assistant' && m.id === id
+                  ? { ...m, dbId: event.message_id, isPrimaryModel: event.is_primary_model ?? false }
+                  : m
               );
             }
             if (event.summarized) {

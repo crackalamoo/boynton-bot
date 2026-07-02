@@ -3,7 +3,7 @@ import pytest
 from unittest.mock import patch, AsyncMock
 from psycopg.rows import dict_row
 
-from backend.agent import _execute_with_fallback, _persist_op, _compact
+from backend.agent import CLIENTS, PRIMARY_MODEL, _execute_with_fallback, _persist_op, _compact
 from backend.database import pool
 
 
@@ -43,6 +43,9 @@ async def test_basic_stream_emits_tokens_and_done(channel):
     assert "token" in types
     assert types[-1] == "done"
     assert "".join(e["content"] for e in events if e["type"] == "token") == "Hello world"
+    # Unmocked _execute_with_fallback always succeeds on CLIENTS[0] here — whether that's
+    # actually "primary" depends on env, so derive the expectation rather than hardcode it.
+    assert events[-1]["is_primary_model"] == (CLIENTS[0][1] == PRIMARY_MODEL)
 
 
 async def test_basic_stream_persists_assistant_message(channel):
@@ -56,11 +59,12 @@ async def test_basic_stream_persists_assistant_message(channel):
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                "SELECT content FROM messages WHERE session_id = %s AND role = 'assistant'",
+                "SELECT content, model FROM messages WHERE session_id = %s AND role = 'assistant'",
                 (channel,)
             )
             row = await cur.fetchone()
     assert row["content"] == "Reply text"
+    assert row["model"] == CLIENTS[0][1]
 
 
 async def test_tool_call_round_dispatches_and_continues(channel):
@@ -100,6 +104,33 @@ async def test_tool_call_round_persists_tool_rows(channel):
     assert "tool_call" in roles
     assert "tool_result" in roles
     assert next(r for r in rows if r["role"] == "tool_result")["content"] == "file.txt"
+
+
+async def test_tool_call_round_persists_model_on_llm_generated_rows_only(channel):
+    mock = _stream_rounds(
+        [("finish", ("", [{"id": "call_1", "name": "bash", "arguments": '{"command": "ls"}'}], "tool_calls"))],
+        [("finish", ("Done", [], "stop"))],
+    )
+    with patch("backend.agent._stream_round", mock), \
+         patch("backend.agent.execute_tool", AsyncMock(return_value="file.txt")):
+        await _collect_sse(_execute_with_fallback(channel, "run ls"))
+
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT role, model FROM messages WHERE session_id = %s ORDER BY id",
+                (channel,)
+            )
+            rows = await cur.fetchall()
+
+    by_role = {}
+    for r in rows:
+        by_role.setdefault(r["role"], []).append(r["model"])
+
+    assert all(m == CLIENTS[0][1] for m in by_role["assistant"])
+    assert all(m == CLIENTS[0][1] for m in by_role["tool_call"])
+    assert all(m is None for m in by_role["tool_result"])
+    assert all(m is None for m in by_role["user"])
 
 
 # --- compact ---

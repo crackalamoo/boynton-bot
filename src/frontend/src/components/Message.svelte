@@ -27,7 +27,7 @@
       {@const lastPart = msg.parts[msg.parts.length - 1]}
       {#if lastPart.kind === 'tool_call' && lastPart.result !== null}
         <div class="thinking">thinking…</div>
-      {:else if msg.dbId !== undefined}
+      {:else if msg.dbId !== undefined && msg.isPrimaryModel}
         <Feedback messageId={msg.dbId} />
       {/if}
     {/if}

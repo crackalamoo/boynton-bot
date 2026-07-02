@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, patch
 from psycopg.rows import dict_row
 
 import backend.agent as agent_module
-from backend.agent import Agent, _persist_op, build_training_example
+from backend.agent import Agent, PRIMARY_MODEL, _persist_op, build_training_example
 from backend.database import pool
 
 
@@ -28,7 +28,7 @@ def agent():
 
 async def test_build_training_example_simple_turn(channel):
     await _persist_op(channel, {"op": "user_msg", "content": "hello", "hidden": False})
-    reply_id = await _persist_op(channel, {"op": "assistant_msg", "content": "hi there", "hidden": False})
+    reply_id = await _persist_op(channel, {"op": "assistant_msg", "content": "hi there", "hidden": False, "model": PRIMARY_MODEL})
 
     example = await build_training_example(reply_id)
 
@@ -38,10 +38,10 @@ async def test_build_training_example_simple_turn(channel):
 
 async def test_build_training_example_rejects_intermediate_assistant_row(channel):
     await _persist_op(channel, {"op": "user_msg", "content": "run ls", "hidden": False})
-    intermediate_id = await _persist_op(channel, {"op": "assistant_msg", "content": "", "hidden": False})
-    await _persist_op(channel, {"op": "tool_call", "tool_name": "bash", "arguments": {"command": "ls"}})
+    intermediate_id = await _persist_op(channel, {"op": "assistant_msg", "content": "", "hidden": False, "model": PRIMARY_MODEL})
+    await _persist_op(channel, {"op": "tool_call", "tool_name": "bash", "arguments": {"command": "ls"}, "model": PRIMARY_MODEL})
     await _persist_op(channel, {"op": "tool_result", "tool_name": "bash", "content": "file.txt"})
-    await _persist_op(channel, {"op": "assistant_msg", "content": "Done", "hidden": False})
+    await _persist_op(channel, {"op": "assistant_msg", "content": "Done", "hidden": False, "model": PRIMARY_MODEL})
 
     with pytest.raises(ValueError):
         await build_training_example(intermediate_id)
@@ -49,10 +49,10 @@ async def test_build_training_example_rejects_intermediate_assistant_row(channel
 
 async def test_build_training_example_includes_tool_turn_in_response(channel):
     await _persist_op(channel, {"op": "user_msg", "content": "run ls", "hidden": False})
-    await _persist_op(channel, {"op": "assistant_msg", "content": "", "hidden": False})
-    await _persist_op(channel, {"op": "tool_call", "tool_name": "bash", "arguments": {"command": "ls"}})
+    await _persist_op(channel, {"op": "assistant_msg", "content": "", "hidden": False, "model": PRIMARY_MODEL})
+    await _persist_op(channel, {"op": "tool_call", "tool_name": "bash", "arguments": {"command": "ls"}, "model": PRIMARY_MODEL})
     await _persist_op(channel, {"op": "tool_result", "tool_name": "bash", "content": "file.txt"})
-    final_id = await _persist_op(channel, {"op": "assistant_msg", "content": "Done", "hidden": False})
+    final_id = await _persist_op(channel, {"op": "assistant_msg", "content": "Done", "hidden": False, "model": PRIMARY_MODEL})
 
     example = await build_training_example(final_id)
     response = example["response"]
@@ -67,17 +67,17 @@ async def test_build_training_example_includes_tool_turn_in_response(channel):
 async def test_build_training_example_no_duplicate_tool_call_ids_across_prompt_and_response(channel):
     # A prior turn (in the prompt) with a tool call...
     await _persist_op(channel, {"op": "user_msg", "content": "first", "hidden": False})
-    await _persist_op(channel, {"op": "assistant_msg", "content": "", "hidden": False})
-    await _persist_op(channel, {"op": "tool_call", "tool_name": "bash", "arguments": {"command": "ls"}})
+    await _persist_op(channel, {"op": "assistant_msg", "content": "", "hidden": False, "model": PRIMARY_MODEL})
+    await _persist_op(channel, {"op": "tool_call", "tool_name": "bash", "arguments": {"command": "ls"}, "model": PRIMARY_MODEL})
     await _persist_op(channel, {"op": "tool_result", "tool_name": "bash", "content": "a.txt"})
-    await _persist_op(channel, {"op": "assistant_msg", "content": "first done", "hidden": False})
+    await _persist_op(channel, {"op": "assistant_msg", "content": "first done", "hidden": False, "model": PRIMARY_MODEL})
 
     # ...and the judged turn (in the response) also with a tool call.
     await _persist_op(channel, {"op": "user_msg", "content": "second", "hidden": False})
-    await _persist_op(channel, {"op": "assistant_msg", "content": "", "hidden": False})
-    await _persist_op(channel, {"op": "tool_call", "tool_name": "bash", "arguments": {"command": "pwd"}})
+    await _persist_op(channel, {"op": "assistant_msg", "content": "", "hidden": False, "model": PRIMARY_MODEL})
+    await _persist_op(channel, {"op": "tool_call", "tool_name": "bash", "arguments": {"command": "pwd"}, "model": PRIMARY_MODEL})
     await _persist_op(channel, {"op": "tool_result", "tool_name": "bash", "content": "/home"})
-    final_id = await _persist_op(channel, {"op": "assistant_msg", "content": "second done", "hidden": False})
+    final_id = await _persist_op(channel, {"op": "assistant_msg", "content": "second done", "hidden": False, "model": PRIMARY_MODEL})
 
     example = await build_training_example(final_id)
     combined = example["prompt"] + example["response"]
@@ -88,11 +88,32 @@ async def test_build_training_example_no_duplicate_tool_call_ids_across_prompt_a
     assert len(tool_call_ids) == len(set(tool_call_ids)), f"duplicate tool_call ids: {tool_call_ids}"
 
 
+async def test_build_training_example_rejects_non_primary_model_message(channel):
+    # Derived from PRIMARY_MODEL, not a literal, so this stays different regardless of env
+    # (PRIMARY_MODEL can be None if no localhost endpoint is configured).
+    fallback_model = f"{PRIMARY_MODEL}-fallback"
+    await _persist_op(channel, {"op": "user_msg", "content": "hello", "hidden": False})
+    reply_id = await _persist_op(
+        channel, {"op": "assistant_msg", "content": "hi there", "hidden": False, "model": fallback_model}
+    )
+
+    with pytest.raises(ValueError):
+        await build_training_example(reply_id)
+
+
+async def test_build_training_example_rejects_message_with_no_model(channel):
+    await _persist_op(channel, {"op": "user_msg", "content": "hello", "hidden": False})
+    reply_id = await _persist_op(channel, {"op": "assistant_msg", "content": "hi there", "hidden": False})
+
+    with pytest.raises(ValueError):
+        await build_training_example(reply_id)
+
+
 # --- Agent.record_feedback / resolve_feedback ---
 
 async def test_record_feedback_up(agent, channel):
     await _persist_op(channel, {"op": "user_msg", "content": "hello", "hidden": False})
-    reply_id = await _persist_op(channel, {"op": "assistant_msg", "content": "hi there", "hidden": False})
+    reply_id = await _persist_op(channel, {"op": "assistant_msg", "content": "hi there", "hidden": False, "model": PRIMARY_MODEL})
 
     row = await agent.record_feedback(reply_id, "up")
 
@@ -104,7 +125,7 @@ async def test_record_feedback_up(agent, channel):
 
 async def test_record_feedback_down_sets_pending(agent, channel):
     await _persist_op(channel, {"op": "user_msg", "content": "hello", "hidden": False})
-    reply_id = await _persist_op(channel, {"op": "assistant_msg", "content": "hi there", "hidden": False})
+    reply_id = await _persist_op(channel, {"op": "assistant_msg", "content": "hi there", "hidden": False, "model": PRIMARY_MODEL})
 
     row = await agent.record_feedback(reply_id, "down")
 
@@ -114,7 +135,7 @@ async def test_record_feedback_down_sets_pending(agent, channel):
 
 async def test_record_feedback_twice_overwrites_row(agent, channel):
     await _persist_op(channel, {"op": "user_msg", "content": "hello", "hidden": False})
-    reply_id = await _persist_op(channel, {"op": "assistant_msg", "content": "hi there", "hidden": False})
+    reply_id = await _persist_op(channel, {"op": "assistant_msg", "content": "hi there", "hidden": False, "model": PRIMARY_MODEL})
 
     first = await agent.record_feedback(reply_id, "down")
     second = await agent.record_feedback(reply_id, "up")
@@ -124,9 +145,19 @@ async def test_record_feedback_twice_overwrites_row(agent, channel):
     assert second["correction_status"] is None
 
 
+async def test_record_feedback_rejects_non_primary_model(agent, channel):
+    await _persist_op(channel, {"op": "user_msg", "content": "hello", "hidden": False})
+    reply_id = await _persist_op(
+        channel, {"op": "assistant_msg", "content": "hi there", "hidden": False, "model": "some-other-hosted-model"}
+    )
+
+    with pytest.raises(ValueError):
+        await agent.record_feedback(reply_id, "up")
+
+
 async def test_resolve_feedback_approve_and_reject(agent, channel):
     await _persist_op(channel, {"op": "user_msg", "content": "hello", "hidden": False})
-    reply_id = await _persist_op(channel, {"op": "assistant_msg", "content": "hi there", "hidden": False})
+    reply_id = await _persist_op(channel, {"op": "assistant_msg", "content": "hi there", "hidden": False, "model": PRIMARY_MODEL})
     row = await agent.record_feedback(reply_id, "down")
 
     approved = await agent.resolve_feedback(row["id"], "approve", correction=[{"role": "assistant", "content": "better"}])
@@ -156,7 +187,7 @@ def _stream_rounds(*rounds):
 
 async def test_add_feedback_note_requires_down_row(agent, channel):
     await _persist_op(channel, {"op": "user_msg", "content": "hello", "hidden": False})
-    reply_id = await _persist_op(channel, {"op": "assistant_msg", "content": "hi there", "hidden": False})
+    reply_id = await _persist_op(channel, {"op": "assistant_msg", "content": "hi there", "hidden": False, "model": PRIMARY_MODEL})
     row = await agent.record_feedback(reply_id, "up")
 
     with pytest.raises(ValueError):
@@ -165,7 +196,7 @@ async def test_add_feedback_note_requires_down_row(agent, channel):
 
 async def test_add_feedback_note_drafts_correction(agent, channel):
     await _persist_op(channel, {"op": "user_msg", "content": "what's the weather", "hidden": False})
-    reply_id = await _persist_op(channel, {"op": "assistant_msg", "content": "it's sunny", "hidden": False})
+    reply_id = await _persist_op(channel, {"op": "assistant_msg", "content": "it's sunny", "hidden": False, "model": PRIMARY_MODEL})
     row = await agent.record_feedback(reply_id, "down")
 
     mock = _stream_rounds(
@@ -186,7 +217,7 @@ async def test_add_feedback_note_drafts_correction(agent, channel):
 
 async def test_add_feedback_note_marks_error_on_failure(agent, channel):
     await _persist_op(channel, {"op": "user_msg", "content": "what's the weather", "hidden": False})
-    reply_id = await _persist_op(channel, {"op": "assistant_msg", "content": "it's sunny", "hidden": False})
+    reply_id = await _persist_op(channel, {"op": "assistant_msg", "content": "it's sunny", "hidden": False, "model": PRIMARY_MODEL})
     row = await agent.record_feedback(reply_id, "down")
 
     async def broken_stream(*args, **kwargs):
@@ -203,7 +234,7 @@ async def test_add_feedback_note_marks_error_on_failure(agent, channel):
 
 async def test_draft_correction_persists_to_isolated_channel(agent, channel):
     await _persist_op(channel, {"op": "user_msg", "content": "what's the weather", "hidden": False})
-    reply_id = await _persist_op(channel, {"op": "assistant_msg", "content": "it's sunny", "hidden": False})
+    reply_id = await _persist_op(channel, {"op": "assistant_msg", "content": "it's sunny", "hidden": False, "model": PRIMARY_MODEL})
     row = await agent.record_feedback(reply_id, "down")
 
     mock = _stream_rounds(
@@ -232,15 +263,17 @@ async def test_draft_correction_persists_to_isolated_channel(agent, channel):
 async def test_draft_correction_tool_call_ids_do_not_collide_with_prompt(agent, channel):
     # Prompt (a prior turn) contains a tool call...
     await _persist_op(channel, {"op": "user_msg", "content": "first", "hidden": False})
-    await _persist_op(channel, {"op": "assistant_msg", "content": "", "hidden": False})
-    await _persist_op(channel, {"op": "tool_call", "tool_name": "bash", "arguments": {"command": "ls"}})
+    await _persist_op(channel, {"op": "assistant_msg", "content": "", "hidden": False, "model": PRIMARY_MODEL})
+    await _persist_op(channel, {"op": "tool_call", "tool_name": "bash", "arguments": {"command": "ls"}, "model": PRIMARY_MODEL})
     await _persist_op(channel, {"op": "tool_result", "tool_name": "bash", "content": "a.txt"})
-    await _persist_op(channel, {"op": "assistant_msg", "content": "first done", "hidden": False})
+    await _persist_op(channel, {"op": "assistant_msg", "content": "first done", "hidden": False, "model": PRIMARY_MODEL})
 
     # ...the judged (bad) turn does not call a tool, which is exactly the failure mode
     # this feature exists to correct.
     await _persist_op(channel, {"op": "user_msg", "content": "what's on hn", "hidden": False})
-    reply_id = await _persist_op(channel, {"op": "assistant_msg", "content": "I checked, nothing notable", "hidden": False})
+    reply_id = await _persist_op(
+        channel, {"op": "assistant_msg", "content": "I checked, nothing notable", "hidden": False, "model": PRIMARY_MODEL}
+    )
     row = await agent.record_feedback(reply_id, "down")
 
     # The correction the agent drafts calls a tool for real this time.
@@ -259,3 +292,48 @@ async def test_draft_correction_tool_call_ids_do_not_collide_with_prompt(agent, 
     combined = final["prompt"] + final["correction"]
     tool_call_ids = [tc["id"] for m in combined if m.get("tool_calls") for tc in m["tool_calls"]]
     assert len(tool_call_ids) == len(set(tool_call_ids)), f"duplicate tool_call ids: {tool_call_ids}"
+
+
+# --- model persistence / eligibility signaling ---
+
+async def test_persist_op_stores_model_on_assistant_and_tool_call_rows(channel):
+    assistant_id = await _persist_op(
+        channel, {"op": "assistant_msg", "content": "", "hidden": False, "model": PRIMARY_MODEL}
+    )
+    tool_call_id = await _persist_op(
+        channel, {"op": "tool_call", "tool_name": "bash", "arguments": {"command": "ls"}, "model": PRIMARY_MODEL}
+    )
+    tool_result_id = await _persist_op(
+        channel, {"op": "tool_result", "tool_name": "bash", "content": "file.txt"}
+    )
+    user_id = await _persist_op(channel, {"op": "user_msg", "content": "hi", "hidden": False})
+
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT id, model FROM messages WHERE id = ANY(%s)",
+                ([assistant_id, tool_call_id, tool_result_id, user_id],),
+            )
+            rows = {r["id"]: r["model"] for r in await cur.fetchall()}
+
+    assert rows[assistant_id] == PRIMARY_MODEL
+    assert rows[tool_call_id] == PRIMARY_MODEL
+    assert rows[tool_result_id] is None
+    assert rows[user_id] is None
+
+
+async def test_get_history_reports_is_primary_model_per_row(agent, channel):
+    # PRIMARY_MODEL depends on ambient env (can even be None with no local endpoint
+    # configured) — patch it to a known value so this test is deterministic.
+    with patch.object(agent_module, "PRIMARY_MODEL", "the-local-model"):
+        await _persist_op(channel, {"op": "user_msg", "content": "hi", "hidden": False})
+        await _persist_op(channel, {"op": "assistant_msg", "content": "from local", "hidden": False, "model": "the-local-model"})
+        await _persist_op(channel, {"op": "assistant_msg", "content": "from fallback", "hidden": False, "model": "some-other-model"})
+        await _persist_op(channel, {"op": "assistant_msg", "content": "pre-migration row", "hidden": False})
+
+        history = await agent.get_history(channel)
+        by_content = {m["content"]: m for m in history["messages"] if m["role"] == "assistant"}
+
+        assert by_content["from local"]["is_primary_model"] is True
+        assert by_content["from fallback"]["is_primary_model"] is False
+        assert by_content["pre-migration row"]["is_primary_model"] is False
