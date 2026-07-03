@@ -707,21 +707,59 @@ class Agent:
     def __init__(self):
         self._jobs = JobQueue(run_chat=_run_chat_job, run_compact=_run_compact_job)
 
-    async def get_history(self, channel: str, include_hidden: bool = False) -> dict[str, Any]:
+    async def get_history(
+        self,
+        channel: str,
+        include_hidden: bool = False,
+        before_id: int | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
         async with pool.connection() as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute("SELECT summary, summary_created_at FROM sessions WHERE id = %s", (channel,))
                 session = await cur.fetchone()
                 if session is None:
-                    return {"messages": [], "summary_created_at": None, "summary": None}
+                    return {"messages": [], "summary_created_at": None, "summary": None, "has_more": False}
 
                 summary_created_at = session["summary_created_at"]
 
                 hidden_clause = "" if include_hidden else "AND NOT hidden"
+                before_clause = "AND id < %s" if before_id is not None else ""
+                # Page starts must land exactly on a role='user' row so that a turn (user +
+                # its assistant/tool_call/tool_result rows) is never split across a page
+                # boundary — parseHistory groups rows into turns and can't reassemble a
+                # fragmented one from two separately-fetched pages.
+                cursor_params: tuple[Any, ...] = (channel, before_id) if before_id is not None else (channel,)
+                await cur.execute(
+                    f"SELECT id FROM messages WHERE session_id = %s {hidden_clause} {before_clause} "
+                    f"AND role = 'user' ORDER BY id DESC LIMIT %s",
+                    (*cursor_params, limit),
+                )
+                user_row_ids = [r["id"] for r in await cur.fetchall()]
+
+                if not user_row_ids:
+                    return {
+                        "messages": [],
+                        "summary_created_at": summary_created_at.isoformat() if summary_created_at else None,
+                        "summary": session["summary"],
+                        "has_more": False,
+                    }
+
+                page_start_id = user_row_ids[-1]
+
+                await cur.execute(
+                    f"SELECT id FROM messages WHERE session_id = %s {hidden_clause} "
+                    f"AND role = 'user' AND id < %s LIMIT 1",
+                    (channel, page_start_id),
+                )
+                has_more = await cur.fetchone() is not None
+
+                upper_bound_clause = "AND id < %s" if before_id is not None else ""
+                upper_bound_params: tuple[Any, ...] = (before_id,) if before_id is not None else ()
                 await cur.execute(
                     f"SELECT id, role, content, tool_name, arguments, hidden, created_at, model FROM messages "
-                    f"WHERE session_id = %s {hidden_clause} ORDER BY id ASC",
-                    (channel,)
+                    f"WHERE session_id = %s {hidden_clause} AND id >= %s {upper_bound_clause} ORDER BY id ASC",
+                    (channel, page_start_id, *upper_bound_params)
                 )
                 rows = await cur.fetchall()
 
@@ -743,6 +781,7 @@ class Agent:
                     "messages": messages,
                     "summary_created_at": summary_created_at.isoformat() if summary_created_at else None,
                     "summary": session["summary"],
+                    "has_more": has_more,
                 }
 
     async def clear(self, channel: str):

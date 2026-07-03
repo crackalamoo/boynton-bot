@@ -13,22 +13,76 @@
   let showHidden = $state(false);
   let nextMsgId = 0;
 
+  let oldestLoadedUserRowId = $state<number | null>(null);
+  let hasMoreHistory = $state(false);
+  let loadingOlderHistory = $state(false);
+  let topSentinel = $state<HTMLDivElement | null>(null);
+
   async function scrollToBottom(behavior: ScrollBehavior = 'instant') {
     await tick();
     window.scrollTo({ top: document.body.scrollHeight, behavior });
+  }
+
+  function oldestUserRowId(history: { messages: { id?: number; role: string }[] }): number | null {
+    const firstUser = history.messages.find((m) => m.role === 'user');
+    return firstUser?.id ?? null;
   }
 
   async function loadHistory() {
     try {
       const res = await fetch('/api/history?include_hidden=true');
       if (res.ok) {
-        messages = parseHistory(await res.json());
+        const history = await res.json();
+        messages = parseHistory(history);
+        oldestLoadedUserRowId = oldestUserRowId(history);
+        hasMoreHistory = history.has_more ?? false;
         scrollToBottom();
       }
     } catch (_) {}
   }
 
+  async function loadOlderHistory() {
+    if (loadingOlderHistory || !hasMoreHistory || oldestLoadedUserRowId === null) return;
+    loadingOlderHistory = true;
+    try {
+      const res = await fetch(`/api/history?include_hidden=true&before_id=${oldestLoadedUserRowId}`);
+      if (res.ok) {
+        const history = await res.json();
+        let olderMessages = parseHistory(history);
+        // The divider can only ever belong once, at the seam between the last pre-cutoff
+        // and first post-cutoff message. If the currently-loaded window already contains
+        // it, an older page can only be entirely pre-cutoff (created_at/id are both
+        // monotonic), so any divider parseHistory placed in it is a duplicate — drop it.
+        if (messages.some((m) => m.type === 'divider')) {
+          olderMessages = olderMessages.filter((m) => m.type !== 'divider');
+        }
+        const oldScrollHeight = document.body.scrollHeight;
+        const oldScrollY = window.scrollY;
+        messages = [...olderMessages, ...messages];
+        oldestLoadedUserRowId = oldestUserRowId(history) ?? oldestLoadedUserRowId;
+        hasMoreHistory = history.has_more ?? false;
+        await tick();
+        const newScrollHeight = document.body.scrollHeight;
+        window.scrollTo(0, oldScrollY + (newScrollHeight - oldScrollHeight));
+      }
+    } catch (_) {
+    } finally {
+      loadingOlderHistory = false;
+    }
+  }
+
   onMount(loadHistory);
+
+  onMount(() => {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) loadOlderHistory();
+      },
+      { rootMargin: '200px 0px 0px 0px' }
+    );
+    if (topSentinel) observer.observe(topSentinel);
+    return () => observer.disconnect();
+  });
 
   async function sendMessage(message: string) {
     const id = nextMsgId++;
@@ -175,6 +229,8 @@
   async function clearConversation() {
     await fetch('/api/clear', { method: 'POST' });
     messages = [];
+    oldestLoadedUserRowId = null;
+    hasMoreHistory = false;
   }
 
   async function compactConversation() {
@@ -191,7 +247,17 @@
   <article>
     <h1>Boynton Bot</h1>
     <hr />
+    <div bind:this={topSentinel}></div>
     <MessageList {messages} {showHidden} />
     <ChatInput {compacting} {showHidden} {isMobile} onsend={sendMessage} onclear={clearConversation} oncompact={compactConversation} onsettings={() => navigate('/settings')} ontogglehidden={() => showHidden = !showHidden} />
   </article>
 </div>
+
+<style>
+  /* The browser's own scroll anchoring would otherwise fight the manual scrollHeight-delta
+     correction in loadOlderHistory, since the scroll container here is the document, not a
+     bounded div. Disabling it makes the delta the only thing adjusting scroll position. */
+  :global(html) {
+    overflow-anchor: none;
+  }
+</style>

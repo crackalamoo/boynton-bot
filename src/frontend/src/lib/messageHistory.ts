@@ -15,6 +15,7 @@ interface HistoryResponse {
   messages: RawMessage[];
   summary_created_at?: string;
   summary?: string;
+  has_more?: boolean;
 }
 
 export function parseHistory(history: HistoryResponse): Message[] {
@@ -61,7 +62,7 @@ export function parseHistory(history: HistoryResponse): Message[] {
   }
 
   if (dividerInsertAfter >= 0) {
-    mapped.splice(dividerInsertAfter + 1, 0, { type: 'divider', summary: history.summary });
+    mapped.splice(dividerInsertAfter + 1, 0, { type: 'divider', summary: history.summary, key: history.summary_created_at });
   }
 
   return mapped;

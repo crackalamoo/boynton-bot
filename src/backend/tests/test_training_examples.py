@@ -337,3 +337,63 @@ async def test_get_history_reports_is_primary_model_per_row(agent, channel):
         assert by_content["from local"]["is_primary_model"] is True
         assert by_content["from fallback"]["is_primary_model"] is False
         assert by_content["pre-migration row"]["is_primary_model"] is False
+
+
+# --- get_history pagination ---
+
+async def _make_turn(channel, user_content, assistant_content):
+    await _persist_op(channel, {"op": "user_msg", "content": user_content, "hidden": False})
+    await _persist_op(channel, {"op": "assistant_msg", "content": assistant_content, "hidden": False})
+
+
+async def test_get_history_limit_cursors_on_turn_boundaries(agent, channel):
+    await _make_turn(channel, "turn 1", "reply 1")
+    await _make_turn(channel, "turn 2", "reply 2")
+    await _make_turn(channel, "turn 3", "reply 3")
+
+    history = await agent.get_history(channel, limit=2)
+
+    contents = [m["content"] for m in history["messages"]]
+    assert contents == ["turn 2", "reply 2", "turn 3", "reply 3"]
+    assert history["has_more"] is True
+
+
+async def test_get_history_no_more_pages_reports_has_more_false(agent, channel):
+    await _make_turn(channel, "turn 1", "reply 1")
+    await _make_turn(channel, "turn 2", "reply 2")
+
+    history = await agent.get_history(channel, limit=5)
+
+    assert history["has_more"] is False
+
+
+async def test_get_history_before_id_pages_backward_without_gaps_or_overlap(agent, channel):
+    await _make_turn(channel, "turn 1", "reply 1")
+    await _make_turn(channel, "turn 2", "reply 2")
+    await _make_turn(channel, "turn 3", "reply 3")
+
+    first_page = await agent.get_history(channel, limit=2)
+    oldest_id_in_first_page = first_page["messages"][0]["id"]
+
+    second_page = await agent.get_history(channel, before_id=oldest_id_in_first_page, limit=2)
+
+    assert [m["content"] for m in second_page["messages"]] == ["turn 1", "reply 1"]
+    assert second_page["has_more"] is False
+
+    combined_ids = [m["id"] for m in second_page["messages"]] + [m["id"] for m in first_page["messages"]]
+    assert combined_ids == sorted(set(combined_ids))
+    assert len(combined_ids) == len(set(combined_ids))
+
+
+async def test_get_history_before_id_respects_turn_boundary_even_mid_page(agent, channel):
+    await _make_turn(channel, "turn 1", "reply 1")
+    await _make_turn(channel, "turn 2", "reply 2")
+    await _make_turn(channel, "turn 3", "reply 3")
+
+    all_history = await agent.get_history(channel, limit=100)
+    turn_3_user_id = next(m["id"] for m in all_history["messages"] if m["content"] == "turn 3")
+
+    page = await agent.get_history(channel, before_id=turn_3_user_id, limit=1)
+
+    assert [m["content"] for m in page["messages"]] == ["turn 2", "reply 2"]
+    assert page["has_more"] is True

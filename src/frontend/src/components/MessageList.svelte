@@ -4,13 +4,17 @@
 
   let { messages, showHidden }: { messages: MessageType[]; showHidden: boolean } = $props();
 
-  let expandedDividers: Set<number> = $state(new Set());
+  let expandedDividers: Set<string> = $state(new Set());
 
-  function toggleDivider(index: number) {
-    if (expandedDividers.has(index)) {
-      expandedDividers.delete(index);
+  function dividerKey(msg: MessageType, index: number): string {
+    return msg.type === 'divider' && msg.key !== undefined ? msg.key : `idx-${index}`;
+  }
+
+  function toggleDivider(key: string) {
+    if (expandedDividers.has(key)) {
+      expandedDividers.delete(key);
     } else {
-      expandedDividers.add(index);
+      expandedDividers.add(key);
     }
     expandedDividers = new Set(expandedDividers);
   }
@@ -35,16 +39,17 @@
 <div id="messages">
   {#each visibleMessages(messages) as msg, i}
     {#if msg.type === 'divider'}
+      {@const key = dividerKey(msg, i)}
       <div
         class="summary-notice"
         role="button"
         tabindex="0"
-        onclick={() => toggleDivider(i)}
-        onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && toggleDivider(i)}
+        onclick={() => toggleDivider(key)}
+        onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && toggleDivider(key)}
       >
         — conversation summarized —
       </div>
-      {#if expandedDividers.has(i) && msg.summary}
+      {#if expandedDividers.has(key) && msg.summary}
         <div class="summary-text">{msg.summary}</div>
       {/if}
     {:else}
