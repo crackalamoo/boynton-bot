@@ -66,6 +66,7 @@ async def _stream_round(
     messages: list[dict[str, Any]],
     tools=None,
     max_tokens: int | None = None,
+    priority: str = "high",
 ) -> AsyncGenerator[tuple[str, Any], None]:
     """Stream one completion round.
 
@@ -81,6 +82,8 @@ async def _stream_round(
     )
     if tools:
         kwargs["tools"] = tools
+    if model == PRIMARY_MODEL and PRIMARY_MODEL is not None:
+        kwargs["extra_headers"] = {"X-Priority": priority}
     accumulated_content = ""
     accumulated_tool_calls: dict[int, dict[str, str]] = {}
     finish_reason = "stop"
@@ -396,6 +399,7 @@ async def _execute(
     context: list[dict[str, Any]],
     did_summarize: bool,
     max_tokens: int | None = None,
+    priority: str = "high",
 ) -> AsyncGenerator[str, None]:
     """LLM + tool loop generator.
 
@@ -416,7 +420,7 @@ async def _execute(
         round_content: list[str] = []
         tool_calls = []
         finish_reason = "stop"
-        async for kind, value in _stream_round(client, model, tool_context, tools=tools, max_tokens=max_tokens):
+        async for kind, value in _stream_round(client, model, tool_context, tools=tools, max_tokens=max_tokens, priority=priority):
             if kind == "token":
                 round_content.append(value)
                 yield "data: " + json.dumps({"type": "token", "content": value}) + "\n\n"
@@ -491,13 +495,14 @@ async def _run_with_fallback(
     context: list[dict[str, Any]],
     did_summarize: bool = False,
     max_tokens: int | None = None,
+    priority: str = "high",
 ) -> AsyncGenerator[str, None]:
     """Run `_execute` over `CLIENTS` in order, falling back to the next client on a
     connection error that happened before anything was committed for this turn.
     """
     last_exc: Exception | None = None
     for client, model in CLIENTS:
-        gen = _execute(client, model, channel, context, did_summarize, max_tokens=max_tokens)
+        gen = _execute(client, model, channel, context, did_summarize, max_tokens=max_tokens, priority=priority)
         committed = False
         try:
             async for event in gen:
@@ -517,6 +522,7 @@ async def _execute_with_fallback(
     channel: str,
     user_message: str,
     max_tokens: int | None = None,
+    priority: str = "high",
 ) -> AsyncGenerator[str, None]:
     client0, model0 = CLIENTS[0]
     context, did_summarize = await _build_context(client0, model0, channel, user_message)
@@ -524,7 +530,7 @@ async def _execute_with_fallback(
     await _persist_op(channel, {"op": "ensure_session", "channel": channel})
     await _persist_op(channel, {"op": "user_msg", "content": user_message, "hidden": False})
 
-    async for event in _run_with_fallback(channel, context, did_summarize, max_tokens=max_tokens):
+    async for event in _run_with_fallback(channel, context, did_summarize, max_tokens=max_tokens, priority=priority):
         yield event
 
 
@@ -667,7 +673,7 @@ async def _draft_correction(example_id: int) -> None:
         await _persist_op(channel, {"op": "ensure_session", "channel": channel})
         root_id = await _persist_op(channel, {"op": "user_msg", "content": correction_request, "hidden": False})
 
-        async for _ in _run_with_fallback(channel, context):
+        async for _ in _run_with_fallback(channel, context, priority="low"):
             pass
 
         async with pool.connection() as conn:
