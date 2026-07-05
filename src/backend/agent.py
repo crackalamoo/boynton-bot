@@ -1,5 +1,5 @@
 import asyncio
-from openai import AsyncOpenAI, APIConnectionError
+from openai import AsyncOpenAI, APIConnectionError, BadRequestError
 from dotenv import load_dotenv
 from psycopg.rows import dict_row
 from backend.database import pool
@@ -83,7 +83,10 @@ async def _stream_round(
     if tools:
         kwargs["tools"] = tools
     if model == PRIMARY_MODEL and PRIMARY_MODEL is not None:
-        kwargs["extra_headers"] = {"X-Priority": priority}
+        kwargs["extra_headers"] = {
+            "X-Priority": priority,
+            "X-Max-Prompt-Tokens": str(NORMAL_MAX_PROMPT_TOKENS),
+        }
     accumulated_content = ""
     accumulated_tool_calls: dict[int, dict[str, str]] = {}
     finish_reason = "stop"
@@ -118,6 +121,12 @@ async def _stream_round(
 MEMORY_DIR = os.environ["BOYNTON_MEMORY_DIR"]  # required — filesystem path to memory files
 SUMMARIZATION_THRESHOLD = 50_000  # tokens (approximate)
 MAX_TOOL_ROUNDS = 15
+
+# Tight, well under qwen's own hard ceiling (50,000) — asks qwen to reject early
+# and cleanly if summarization has fallen behind, rather than risk the hard
+# ceiling. Not sent on the summarization call itself (see _do_summarize), which
+# needs to see the full unsummarized backlog.
+NORMAL_MAX_PROMPT_TOKENS = 40_000
 
 SYSTEM_PROMPT = "You are a personal AI assistant."
 
@@ -518,6 +527,17 @@ async def _run_with_fallback(
     raise RuntimeError("No LLM servers available")
 
 
+def _is_context_length_exceeded(e: BadRequestError) -> bool:
+    """True if the error body reports code == "context_length_exceeded" (the
+    OpenAI/qwen error shape nests it under "error")."""
+    body = getattr(e, "body", None)
+    if not isinstance(body, dict):
+        return False
+    error = body.get("error")
+    code = error.get("code") if isinstance(error, dict) else body.get("code")
+    return code == "context_length_exceeded"
+
+
 async def _execute_with_fallback(
     channel: str,
     user_message: str,
@@ -530,8 +550,20 @@ async def _execute_with_fallback(
     await _persist_op(channel, {"op": "ensure_session", "channel": channel})
     await _persist_op(channel, {"op": "user_msg", "content": user_message, "hidden": False})
 
-    async for event in _run_with_fallback(channel, context, did_summarize, max_tokens=max_tokens, priority=priority):
-        yield event
+    try:
+        async for event in _run_with_fallback(channel, context, did_summarize, max_tokens=max_tokens, priority=priority):
+            yield event
+    except BadRequestError as e:
+        if not _is_context_length_exceeded(e):
+            raise
+        # Compact folds the persisted user message into the summary, so
+        # re-passing user_message rebuilds the turn instead of just its gist.
+        # Assumes rejection on the turn's first round; a later tool round
+        # would re-stream already-yielded output on retry.
+        await _compact(channel)
+        context, _ = await _build_context(client0, model0, channel, user_message)
+        async for event in _run_with_fallback(channel, context, True, max_tokens=max_tokens, priority=priority):
+            yield event
 
 
 async def _run_chat_job(channel: str, job: Job) -> None:

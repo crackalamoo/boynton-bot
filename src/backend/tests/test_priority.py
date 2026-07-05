@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 import backend.agent as agent_module
-from backend.agent import Agent, _execute_with_fallback, _persist_op, _stream_round
+from backend.agent import Agent, NORMAL_MAX_PROMPT_TOKENS, _execute_with_fallback, _persist_op, _stream_round
 
 
 async def _empty_stream():
@@ -40,7 +40,7 @@ async def test_stream_round_adds_high_priority_header_for_primary_model():
         await _drain(_stream_round(client, "the-local-model", [{"role": "user", "content": "hi"}], priority="high"))
 
     kwargs = mock_create.call_args.kwargs
-    assert kwargs["extra_headers"] == {"X-Priority": "high"}
+    assert kwargs["extra_headers"] == {"X-Priority": "high", "X-Max-Prompt-Tokens": str(NORMAL_MAX_PROMPT_TOKENS)}
 
 
 async def test_stream_round_adds_low_priority_header_for_primary_model():
@@ -51,7 +51,7 @@ async def test_stream_round_adds_low_priority_header_for_primary_model():
         await _drain(_stream_round(client, "the-local-model", [{"role": "user", "content": "hi"}], priority="low"))
 
     kwargs = mock_create.call_args.kwargs
-    assert kwargs["extra_headers"] == {"X-Priority": "low"}
+    assert kwargs["extra_headers"] == {"X-Priority": "low", "X-Max-Prompt-Tokens": str(NORMAL_MAX_PROMPT_TOKENS)}
 
 
 # --- priority threading through the call chain ---
