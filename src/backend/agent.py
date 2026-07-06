@@ -128,12 +128,56 @@ MAX_TOOL_ROUNDS = 15
 # needs to see the full unsummarized backlog.
 NORMAL_MAX_PROMPT_TOKENS = 40_000
 
+# Conservative — some content (JSON/structured tool output) tokenizes much
+# denser than English prose. A real incident measured ~2.7 chars/token for a
+# large tool_result; this ratio is deliberately pessimistic vs. that measurement.
+CHARS_PER_TOKEN_ESTIMATE = 3
+
+# Budget for the summarization prompt itself, in tokens — well under qwen's
+# hard prompt ceiling (50,000) to leave headroom for the prior-summary text,
+# the prompt wrapper, and any residual error in CHARS_PER_TOKEN_ESTIMATE.
+SUMMARIZE_TOKEN_BUDGET = 30_000
+
+# Floor so every message keeps at least a gist-sized snippet, even the oldest.
+MIN_SUMMARY_MESSAGE_CHARS = 200
+
 SYSTEM_PROMPT = "You are a personal AI assistant."
 
 
 
 def _estimate_tokens(messages):
-    return sum((len(m.get("content") or "") + len(m.get("arguments") or "")) // 4 for m in messages)
+    return sum((len(m.get("content") or "") + len(m.get("arguments") or "")) // CHARS_PER_TOKEN_ESTIMATE for m in messages)
+
+
+def _budget_unsummarized_lines(unsummarized: list[dict[str, Any]]) -> str:
+    """Render unsummarized rows (oldest first) as text for the summarization prompt.
+
+    Truncates from the oldest message forward if over SUMMARIZE_TOKEN_BUDGET, so a
+    single oversized message (e.g. a large tool result) can't blow the summarization
+    call past qwen's hard ceiling. Never drops a message entirely — recency is what
+    matters most, so newest content (including the message that triggered this
+    compaction) survives intact for as long as the budget allows.
+    """
+    rendered = [f"{m['role'].upper()}: {m['content'] or ''}" for m in unsummarized]
+    total_tokens = _estimate_tokens([{"content": line} for line in rendered])
+    if total_tokens <= SUMMARIZE_TOKEN_BUDGET:
+        return "\n".join(rendered)
+
+    excess_tokens = total_tokens - SUMMARIZE_TOKEN_BUDGET
+    for i, line in enumerate(rendered):
+        if excess_tokens <= 0:
+            break
+        cuttable_chars = len(line) - MIN_SUMMARY_MESSAGE_CHARS
+        if cuttable_chars <= 0:
+            continue
+        line_tokens = _estimate_tokens([{"content": line}])
+        cut_chars = min(cuttable_chars, excess_tokens * CHARS_PER_TOKEN_ESTIMATE)
+        keep = len(line) - cut_chars
+        truncated = f"{line[:keep]}... [truncated {cut_chars} chars]"
+        rendered[i] = truncated
+        new_tokens = _estimate_tokens([{"content": truncated}])
+        excess_tokens -= max(line_tokens - new_tokens, 0)
+    return "\n".join(rendered)
 
 
 async def _do_summarize(conn, cur, client, model: str, channel: str, session: dict[str, Any], unsummarized: list[dict[str, Any]]) -> dict[str, Any]:
@@ -141,7 +185,7 @@ async def _do_summarize(conn, cur, client, model: str, channel: str, session: di
     Returns the refreshed session row.
     """
     prior = f"Prior summary:\n{session['summary']}\n\n" if session["summary"] else ""
-    lines = "\n".join(f"{m['role'].upper()}: {m['content']}" for m in unsummarized)
+    lines = _budget_unsummarized_lines(unsummarized)
     new_summary = await _complete(client, model, [{
         "role": "user",
         "content": f"Summarize this conversation concisely, preserving key facts and context:\n\n{prior}{lines}"

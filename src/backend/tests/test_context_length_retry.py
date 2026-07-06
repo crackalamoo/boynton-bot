@@ -5,7 +5,11 @@ from unittest.mock import AsyncMock, patch
 from psycopg.rows import dict_row
 
 from backend.agent import (
+    CHARS_PER_TOKEN_ESTIMATE,
     NORMAL_MAX_PROMPT_TOKENS,
+    SUMMARIZE_TOKEN_BUDGET,
+    _budget_unsummarized_lines,
+    _compact,
     _execute_with_fallback,
     _is_context_length_exceeded,
     _persist_op,
@@ -108,3 +112,77 @@ async def test_non_context_length_bad_request_is_not_retried(channel):
         with pytest.raises(BadRequestError):
             async for _ in _execute_with_fallback(channel, "hi"):
                 pass
+
+
+# --- budgeted rendering for the summarization prompt ---
+
+def test_budget_unsummarized_lines_leaves_small_backlog_untouched():
+    unsummarized = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+    ]
+    assert _budget_unsummarized_lines(unsummarized) == "USER: hi\nASSISTANT: hello"
+
+
+CHAR_BUDGET = SUMMARIZE_TOKEN_BUDGET * CHARS_PER_TOKEN_ESTIMATE
+
+
+def test_budget_unsummarized_lines_truncates_single_oversized_message():
+    original = "y" * (CHAR_BUDGET + 5000)
+    unsummarized = [{"role": "tool_result", "content": original}]
+    result = _budget_unsummarized_lines(unsummarized)
+    assert "truncated" in result
+    assert len(result) < len(original)
+
+
+def test_budget_unsummarized_lines_truncates_oldest_first_and_keeps_newest_intact():
+    old = {"role": "tool_result", "content": "z" * CHAR_BUDGET}
+    newest_user = {"role": "user", "content": "the actual new message"}
+    result = _budget_unsummarized_lines([old, newest_user])
+    # the newest message must survive fully intact
+    assert result.endswith("USER: the actual new message")
+    # the oversized old message got truncated, not fully dropped
+    assert "truncated" in result
+    assert "TOOL_RESULT:" in result
+
+
+def test_budget_unsummarized_lines_truncates_progressively_across_multiple_old_messages():
+    # Each old message alone is smaller than the total excess, so truncating just
+    # the oldest down to the floor isn't enough — the next-oldest must also give
+    # some ground, while the newest stays fully intact.
+    old1 = {"role": "tool_result", "content": "a" * CHAR_BUDGET}
+    old2 = {"role": "tool_result", "content": "b" * CHAR_BUDGET}
+    newest = {"role": "user", "content": "brand new message"}
+    result = _budget_unsummarized_lines([old1, old2, newest])
+
+    assert result.endswith("USER: brand new message")
+    lines = result.split("\n")
+    assert "truncated" in lines[0]
+    assert "truncated" in lines[1]
+    # nothing fully removed — some of each old message's original char survives
+    assert "a" in lines[0]
+    assert "b" in lines[1]
+
+
+async def test_compact_survives_a_single_oversized_message(channel):
+    """A single huge tool result (bigger than the hard prompt ceiling on its own)
+    must not stop compaction from succeeding — see boynton-bot.log incident where
+    one 32k-char tool_result made every subsequent compact attempt fail forever."""
+    await _persist_op(channel, {"op": "user_msg", "content": "fetch that page", "hidden": False})
+    huge_tool_result = "y" * (CHAR_BUDGET + 20_000)  # bigger than the summarization budget on its own
+    await _persist_op(
+        channel,
+        {"op": "tool_result", "tool_name": "web_fetch", "content": huge_tool_result, "hidden": False},
+    )
+
+    captured_prompt = {}
+
+    async def capture_complete(client, model, messages):
+        captured_prompt["content"] = messages[0]["content"]
+        return "summary of the fetch"
+
+    with patch("backend.agent._complete", capture_complete):
+        assert await _compact(channel) is True
+
+    assert len(captured_prompt["content"]) < len(huge_tool_result)
+    assert "truncated" in captured_prompt["content"]
