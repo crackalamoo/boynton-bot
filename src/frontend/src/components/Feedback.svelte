@@ -27,7 +27,7 @@
   // reads of the prop's initial value, not values that should react to later changes.
   let uiState = $state<UiState>(untrack(() => (initialFeedback ? stateFromFeedback(initialFeedback) : 'idle')));
   let feedback = $state<FeedbackData | null>(untrack(() => initialFeedback ?? null));
-  let noteText = $state('');
+  let noteText = $state(untrack(() => initialFeedback?.note ?? ''));
   let correctionText = $state(
     untrack(() => (initialFeedback?.correction ? JSON.stringify(initialFeedback.correction, null, 2) : ''))
   );
@@ -87,6 +87,7 @@
       if (!f) return;
       feedback = f;
       uiState = stateFromFeedback(f);
+      noteText = f.note ?? '';
       if (f.correction) correctionText = JSON.stringify(f.correction, null, 2);
       if (uiState === 'drafting') startPolling(f.id);
     })();
@@ -193,8 +194,12 @@
     <span class="fb-status">
       {feedback?.correction_status === 'approved' ? 'correction approved' : 'correction rejected'}
     </span>
+    {#if feedback?.correction_status === 'rejected'}
+      <button class="fb-link-btn" onclick={() => uiState = 'noting'}>retry correction</button>
+    {/if}
   {:else if uiState === 'error'}
     <span class="fb-status">correction drafting failed</span>
+    <button class="fb-link-btn" onclick={() => uiState = 'noting'}>retry correction</button>
   {/if}
 </div>
 
