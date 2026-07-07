@@ -1,12 +1,9 @@
 <script lang="ts">
-  let { compacting, showHidden, onsend, onclear, oncompact, onsettings, ontogglehidden, isMobile }: {
+  let { compacting, onsend, onclear, oncompact, isMobile }: {
     compacting: boolean;
-    showHidden: boolean;
     onsend: (message: string) => Promise<void>;
     onclear: () => void;
     oncompact: () => Promise<void>;
-    onsettings: () => void;
-    ontogglehidden: () => void;
     isMobile: boolean;
   } = $props();
 
@@ -59,8 +56,6 @@
   </div>
   <button id="clear-btn" onclick={onclear}>clear conversation</button>
   <button id="compact-btn" onclick={oncompact} disabled={compacting}>{compacting ? 'compacting...' : 'compact conversation'}</button>
-  <button id="hidden-btn" onclick={ontogglehidden}>{showHidden ? 'hide hidden' : 'show hidden'}</button>
-  <button id="settings-btn" onclick={onsettings}>settings</button>
 </div>
 
 <style>
@@ -171,33 +166,4 @@
     cursor: default;
   }
 
-  #settings-btn {
-    font-size: 0.8rem;
-    color: var(--muted-color);
-    background: none;
-    border: none;
-    cursor: pointer;
-    padding: 0;
-    margin-block-start: 0.2rem;
-    display: block;
-  }
-
-  #settings-btn:hover {
-    color: var(--text-color);
-  }
-
-  #hidden-btn {
-    font-size: 0.8rem;
-    color: var(--muted-color);
-    background: none;
-    border: none;
-    cursor: pointer;
-    padding: 0;
-    margin-block-start: 0.2rem;
-    display: block;
-  }
-
-  #hidden-btn:hover {
-    color: var(--text-color);
-  }
 </style>

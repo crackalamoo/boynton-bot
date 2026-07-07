@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { navigate } from '../lib/router.svelte.js';
+  import { uiPrefs, setShowHidden } from '../lib/uiPrefs.svelte.js';
 
   const SECRET_PLACEHOLDER = '__SET__';
 
@@ -279,6 +280,14 @@
             <label>
               <span>Memory directory</span>
               <input type="text" bind:value={form.BOYNTON_MEMORY_DIR} autocomplete="off" />
+            </label>
+          </section>
+
+          <section>
+            <h2>Display</h2>
+            <label class="inline-check">
+              <input type="checkbox" checked={uiPrefs.showHidden} onchange={(e) => setShowHidden(e.currentTarget.checked)} />
+              <span>Show hidden messages in chat</span>
             </label>
           </section>
 

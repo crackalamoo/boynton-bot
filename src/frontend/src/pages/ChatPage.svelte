@@ -4,13 +4,13 @@
   import ChatInput from '../components/ChatInput.svelte';
   import { parseHistory } from '../lib/messageHistory.js';
   import { navigate } from '../lib/router.svelte.js';
+  import { uiPrefs } from '../lib/uiPrefs.svelte.js';
   import type { Message, SSEEvent } from '../lib/types.js';
 
   const isMobile = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches;
 
   let messages = $state<Message[]>([]);
   let compacting = $state(false);
-  let showHidden = $state(false);
   let nextMsgId = 0;
 
   let oldestLoadedUserRowId = $state<number | null>(null);
@@ -245,15 +245,51 @@
 
 <div class="main">
   <article>
-    <h1>Boynton Bot</h1>
-    <hr />
+    <div class="page-header">
+      <div class="header-row">
+        <h1>Boynton Bot</h1>
+        <button class="settings-icon-btn" onclick={() => navigate('/settings')} aria-label="Settings" title="Settings">⚙</button>
+      </div>
+      <hr />
+    </div>
     <div bind:this={topSentinel}></div>
-    <MessageList {messages} {showHidden} />
-    <ChatInput {compacting} {showHidden} {isMobile} onsend={sendMessage} onclear={clearConversation} oncompact={compactConversation} onsettings={() => navigate('/settings')} ontogglehidden={() => showHidden = !showHidden} />
+    <MessageList {messages} showHidden={uiPrefs.showHidden} />
+    <ChatInput {compacting} {isMobile} onsend={sendMessage} onclear={clearConversation} oncompact={compactConversation} />
   </article>
 </div>
 
 <style>
+  /* Sticky like #input-area, so the gear icon stays reachable without scrolling to
+     the top of a long conversation instead of just scrolling away with the messages. */
+  .page-header {
+    position: sticky;
+    top: 0;
+    background: var(--bg-color);
+    z-index: 1;
+    padding-block-start: 0.5rem;
+  }
+
+  .header-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 1rem;
+  }
+
+  .settings-icon-btn {
+    background: none;
+    border: none;
+    color: var(--muted-color);
+    cursor: pointer;
+    font-size: 1.3rem;
+    line-height: 1;
+    padding: 0.25rem;
+  }
+
+  .settings-icon-btn:hover {
+    color: var(--text-color);
+  }
+
   /* The browser's own scroll anchoring would otherwise fight the manual scrollHeight-delta
      correction in loadOlderHistory, since the scroll container here is the document, not a
      bounded div. Disabling it makes the delta the only thing adjusting scroll position. */

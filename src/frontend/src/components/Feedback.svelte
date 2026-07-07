@@ -142,7 +142,7 @@
   }
 </script>
 
-<div class="feedback">
+<div class="feedback" class:idle-fade={uiState === 'idle'}>
   {#if uiState === 'idle'}
     <button class="fb-btn" onclick={() => submitLabel('up')} disabled={submitting} aria-label="Good response">👍</button>
     <button class="fb-btn" onclick={() => submitLabel('down')} disabled={submitting} aria-label="Bad response">👎</button>
@@ -183,6 +183,28 @@
   .feedback {
     margin-block-start: 0.4rem;
     font-size: 0.8rem;
+  }
+
+  /* The resting thumbs-up/down are only an affordance, not information — hide them
+     until the message is actually hovered (or focused, for keyboard use) so a normal
+     conversation isn't a wall of buttons. Once feedback is recorded or in progress,
+     it's real state, so it stays visible unconditionally. */
+  .feedback.idle-fade {
+    opacity: 0;
+    transition: opacity 0.15s;
+  }
+
+  :global(.msg:hover) .feedback.idle-fade,
+  .feedback.idle-fade:focus-within {
+    opacity: 1;
+  }
+
+  /* On a device with no hover capability (touch), there's no hover state to reveal
+     these on — fading them out would just make them permanently invisible. */
+  @media (hover: none) {
+    .feedback.idle-fade {
+      opacity: 1;
+    }
   }
 
   .fb-btn {
