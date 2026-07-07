@@ -2,11 +2,19 @@
   import { marked } from 'marked';
   import ToolCall from './ToolCall.svelte';
   import Feedback from './Feedback.svelte';
-  import type { Message } from '../lib/types.js';
+  import type { Feedback as FeedbackType, Message } from '../lib/types.js';
 
   marked.setOptions({ breaks: true });
 
-  let { msg, showHidden = false }: { msg: Message; showHidden?: boolean } = $props();
+  // `feedbackData` lets a caller that already has this message's feedback (e.g. the
+  // feedback review page) pass it straight through, so <Feedback> never renders its
+  // idle thumbs-up/down default for a message that's guaranteed to already have real
+  // feedback recorded.
+  let { msg, showHidden = false, feedbackData }: {
+    msg: Message;
+    showHidden?: boolean;
+    feedbackData?: Omit<FeedbackType, 'prompt'>;
+  } = $props();
 </script>
 
 <div class="msg {msg.type}">
@@ -28,7 +36,7 @@
       {#if lastPart.kind === 'tool_call' && lastPart.result !== null}
         <div class="thinking">thinking…</div>
       {:else if msg.dbId !== undefined && msg.isPrimaryModel}
-        <Feedback messageId={msg.dbId} />
+        <Feedback messageId={msg.dbId} initialFeedback={feedbackData} />
       {/if}
     {/if}
   {:else if msg.type === 'user'}

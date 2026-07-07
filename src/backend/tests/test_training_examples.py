@@ -173,6 +173,32 @@ async def test_resolve_feedback_unknown_id_raises(agent):
         await agent.resolve_feedback(999999, "approve")
 
 
+async def test_list_feedback_returns_most_recent_first(agent, channel):
+    await _persist_op(channel, {"op": "user_msg", "content": "hello", "hidden": False})
+    first_id = await _persist_op(channel, {"op": "assistant_msg", "content": "reply 1", "hidden": False, "model": PRIMARY_MODEL})
+    await _persist_op(channel, {"op": "user_msg", "content": "hello again", "hidden": False})
+    second_id = await _persist_op(channel, {"op": "assistant_msg", "content": "reply 2", "hidden": False, "model": PRIMARY_MODEL})
+
+    row1 = await agent.record_feedback(first_id, "up")
+    row2 = await agent.record_feedback(second_id, "down")
+
+    listed = await agent.list_feedback()
+    listed_ids = [r["id"] for r in listed if r["id"] in (row1["id"], row2["id"])]
+    assert listed_ids == [row2["id"], row1["id"]]
+
+
+async def test_list_feedback_replaces_prompt_with_question(agent, channel):
+    await _persist_op(channel, {"op": "user_msg", "content": "what is the weather", "hidden": False})
+    reply_id = await _persist_op(channel, {"op": "assistant_msg", "content": "sunny", "hidden": False, "model": PRIMARY_MODEL})
+    row = await agent.record_feedback(reply_id, "up")
+
+    listed = await agent.list_feedback()
+    listed_row = next(r for r in listed if r["id"] == row["id"])
+
+    assert "prompt" not in listed_row
+    assert listed_row["question"] == "what is the weather"
+
+
 # --- Agent.add_feedback_note / correction drafting ---
 
 def _stream_rounds(*rounds):

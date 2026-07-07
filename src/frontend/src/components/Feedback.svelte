@@ -1,8 +1,14 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import type { Feedback, OpenAIMessage } from '../lib/types.js';
 
-  let { messageId }: { messageId: number } = $props();
+  // Pass `initialFeedback` when the caller already knows this message has feedback
+  // (e.g. the feedback review page, which lists rows that by definition already have
+  // it) — skips the mount fetch and, more importantly, skips ever rendering the
+  // default 'idle' thumbs-up/down for a message that already has real feedback
+  // recorded (which briefly happened before the mount fetch resolved, and could
+  // actually submit a re-label if clicked in that window or if the fetch failed).
+  let { messageId, initialFeedback }: { messageId: number; initialFeedback?: Omit<Feedback, 'prompt'> } = $props();
 
   // 'idle' — nothing recorded yet, thumbs shown.
   // 'up' — thumbs-up recorded, nothing else to do.
@@ -13,14 +19,22 @@
   // 'error' — drafting failed.
   type UiState = 'idle' | 'up' | 'noting' | 'down-pending' | 'drafting' | 'reviewing' | 'resolved' | 'error';
 
-  let uiState = $state<UiState>('idle');
-  let feedback = $state<Feedback | null>(null);
+  type FeedbackData = Feedback | Omit<Feedback, 'prompt'>;
+
+  // `initialFeedback`, if passed, never changes for a given Feedback instance (each
+  // row in the feedback list is keyed by id, so a new instance is created rather than
+  // an existing one reused with a different prop) — these are deliberately one-time
+  // reads of the prop's initial value, not values that should react to later changes.
+  let uiState = $state<UiState>(untrack(() => (initialFeedback ? stateFromFeedback(initialFeedback) : 'idle')));
+  let feedback = $state<FeedbackData | null>(untrack(() => initialFeedback ?? null));
   let noteText = $state('');
-  let correctionText = $state('');
+  let correctionText = $state(
+    untrack(() => (initialFeedback?.correction ? JSON.stringify(initialFeedback.correction, null, 2) : ''))
+  );
   let submitting = $state(false);
   let pollHandle: ReturnType<typeof setInterval> | null = null;
 
-  function stateFromFeedback(f: Feedback): UiState {
+  function stateFromFeedback(f: FeedbackData): UiState {
     if (f.label === 'up') return 'up';
     switch (f.correction_status) {
       case 'pending':
@@ -62,6 +76,10 @@
   }
 
   onMount(() => {
+    if (initialFeedback) {
+      if (uiState === 'drafting') startPolling(initialFeedback.id);
+      return stopPolling;
+    }
     (async () => {
       const res = await fetch(`/api/feedback/message/${messageId}`);
       if (!res.ok) return;
@@ -159,6 +177,7 @@
     </div>
   {:else if uiState === 'down-pending'}
     <span class="fb-status">👎 recorded</span>
+    <button class="fb-link-btn" onclick={() => uiState = 'noting'}>add a note &amp; draft correction</button>
   {:else if uiState === 'drafting'}
     <span class="fb-status">👎 drafting a correction…</span>
   {:else if uiState === 'reviewing'}

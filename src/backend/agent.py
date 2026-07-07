@@ -1047,6 +1047,27 @@ class Agent:
                 await conn.commit()
         return row
 
+    async def list_feedback(self) -> list[dict[str, Any]]:
+        """All training_examples rows, most recent first — powers the feedback review
+        page. Swaps the bulky `prompt` (system prompt + soul + memory index + full
+        prior history) for just the question being answered — the list view only ever
+        showed that one line from it anyway. The full prompt is still available
+        per-row via get_feedback, for anything that actually needs it.
+        """
+        async with pool.connection() as conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT * FROM training_examples ORDER BY id DESC")
+                rows = await cur.fetchall()
+
+        result = []
+        for row in rows:
+            row = dict(row)
+            prompt = row.pop("prompt")
+            question = next((m.get("content") or "" for m in reversed(prompt) if m.get("role") == "user"), "")
+            row["question"] = question
+            result.append(row)
+        return result
+
     async def get_feedback(self, example_id: int) -> dict[str, Any] | None:
         async with pool.connection() as conn:
             async with conn.cursor(row_factory=dict_row) as cur:

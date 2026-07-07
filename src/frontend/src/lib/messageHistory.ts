@@ -1,4 +1,4 @@
-import type { Message, Part } from './types.js';
+import type { Message, OpenAIMessage, Part } from './types.js';
 
 interface RawMessage {
   id?: number;
@@ -66,4 +66,43 @@ export function parseHistory(history: HistoryResponse): Message[] {
   }
 
   return mapped;
+}
+
+// Converts an OpenAI-message-shape turn (as stored in training_examples.response —
+// tool_calls embedded on the assistant message, tool results as separate 'tool' role
+// messages) into the frontend's Part[] shape, so it can be rendered by the same
+// <Message> component the main chat page uses. This is a different raw shape than
+// parseHistory's RawMessage (DB rows with separate tool_call/tool_result rows).
+export function openAIResponseToParts(response: OpenAIMessage[]): Part[] {
+  const parts: Part[] = [];
+  const pendingIndexByCallId = new Map<string, number>();
+
+  for (const m of response) {
+    if (m.role === 'assistant') {
+      if (typeof m.content === 'string' && m.content) {
+        parts.push({ kind: 'text', content: m.content });
+      }
+      const toolCalls = (m.tool_calls as { id: string; function: { name: string; arguments: string } }[] | undefined) ?? [];
+      for (const tc of toolCalls) {
+        let args: Record<string, unknown> = {};
+        try {
+          args = JSON.parse(tc.function.arguments || '{}');
+        } catch (_) {
+          // malformed/truncated arguments — show empty rather than failing to render
+        }
+        pendingIndexByCallId.set(tc.id, parts.length);
+        parts.push({ kind: 'tool_call', name: tc.function.name, arguments: args, result: null });
+      }
+    } else if (m.role === 'tool') {
+      const callId = m.tool_call_id as string | undefined;
+      const idx = callId !== undefined ? pendingIndexByCallId.get(callId) : undefined;
+      if (idx !== undefined) {
+        const existing = parts[idx];
+        if (existing.kind === 'tool_call') {
+          parts[idx] = { ...existing, result: (m.content as string) ?? '' };
+        }
+      }
+    }
+  }
+  return parts;
 }

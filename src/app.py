@@ -111,6 +111,12 @@ async def create_feedback(body: FeedbackCreate, request: Request):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@app.get("/api/feedback")
+async def list_feedback(request: Request):
+    agent = request.app.state.agent
+    return await agent.list_feedback()
+
+
 @app.get("/api/feedback/message/{message_id}")
 async def get_feedback_for_message(message_id: int, request: Request):
     agent = request.app.state.agent

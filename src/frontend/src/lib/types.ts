@@ -46,3 +46,9 @@ export type Feedback = {
   correction: OpenAIMessage[] | null;
   correction_status: CorrectionStatus | null;
 };
+
+// GET /api/feedback (list) shape — a trimmed Feedback: `prompt` (which includes the
+// full system prompt/soul/memory index/prior history) is replaced with just the
+// question being answered, since that's all the list view needs. Fetch a single
+// row's full `prompt` via GET /api/feedback/{id} if it's ever actually needed.
+export type FeedbackListItem = Omit<Feedback, 'prompt'> & { question: string };

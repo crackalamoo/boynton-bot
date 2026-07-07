@@ -248,7 +248,10 @@
     <div class="page-header">
       <div class="header-row">
         <h1>Boynton Bot</h1>
-        <button class="settings-icon-btn" onclick={() => navigate('/settings')} aria-label="Settings" title="Settings">⚙</button>
+        <div class="header-actions">
+          <button class="settings-icon-btn" onclick={() => navigate('/feedback')} aria-label="Feedback" title="Feedback">📝</button>
+          <button class="settings-icon-btn" onclick={() => navigate('/settings')} aria-label="Settings" title="Settings">⚙</button>
+        </div>
       </div>
       <hr />
     </div>
@@ -274,6 +277,12 @@
     align-items: baseline;
     justify-content: space-between;
     gap: 1rem;
+  }
+
+  .header-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.15rem;
   }
 
   .settings-icon-btn {
