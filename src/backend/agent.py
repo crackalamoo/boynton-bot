@@ -501,6 +501,8 @@ async def _execute(
     max_tokens: int | None = None,
     priority: str = "high",
     can_recover: bool = True,
+    allow_side_effects: bool = True,
+    tool_replay: dict[tuple[str, str], str] | None = None,
 ) -> AsyncGenerator[str, None]:
     """LLM + tool loop generator.
 
@@ -516,6 +518,15 @@ async def _execute(
       drafting, which prepends an original prompt/response that was never persisted
       to this channel) must pass False — recovering would silently rebuild from DB
       and drop the synthetic part instead of actually shrinking it.
+    - `allow_side_effects` is forwarded to execute_tool — pass False to stub out
+      side-effecting tools (see registry.SIDE_EFFECTING_TOOLS) instead of running them
+      for real (used by correction drafting).
+    - `tool_replay` maps (tool_name, json.dumps(args, sort_keys=True)) -> a previously
+      recorded result. A tool call that exactly repeats one already in `tool_replay`
+      returns the recorded result instead of executing again — used by correction
+      drafting so an identical tool call (e.g. re-checking the same URL) reflects what
+      was actually seen originally rather than results drifting if the world changed
+      since, or a side-effecting tool running twice.
     - Runs the full LLM + tool loop, persisting every op immediately via `_persist_op`
       as it happens (assistant messages, tool calls, tool results).
     - Yields SSE strings live as events happen.
@@ -591,7 +602,12 @@ async def _execute(
                             "no tool name/arguments could be recovered — the tool call was "
                             "malformed or got cut off before it finished generating"
                         )
-                    result = await execute_tool(tc["name"], args)
+                    replay_key = (tc["name"], json.dumps(args, sort_keys=True))
+                    replayed = tool_replay.get(replay_key) if tool_replay else None
+                    if replayed is not None:
+                        result = replayed
+                    else:
+                        result = await execute_tool(tc["name"], args, allow_side_effects=allow_side_effects)
                 except (ValueError, KeyError, TypeError) as e:
                     # An unknown/blank tool name (malformed or truncated
                     # generation) or a missing/wrong-type argument. Report it
@@ -622,13 +638,19 @@ async def _run_with_fallback(
     max_tokens: int | None = None,
     priority: str = "high",
     can_recover: bool = True,
+    allow_side_effects: bool = True,
+    tool_replay: dict[tuple[str, str], str] | None = None,
 ) -> AsyncGenerator[str, None]:
     """Run `_execute` over `CLIENTS` in order, falling back to the next client on a
     connection error that happened before anything was committed for this turn.
     """
     last_exc: Exception | None = None
     for client, model in CLIENTS:
-        gen = _execute(client, model, channel, context, did_summarize, turn_start_id, max_tokens=max_tokens, priority=priority, can_recover=can_recover)
+        gen = _execute(
+            client, model, channel, context, did_summarize, turn_start_id,
+            max_tokens=max_tokens, priority=priority, can_recover=can_recover,
+            allow_side_effects=allow_side_effects, tool_replay=tool_replay,
+        )
         committed = False
         try:
             async for event in gen:
@@ -780,11 +802,38 @@ def _spawn_background(coro) -> None:
     task.add_done_callback(_background_tasks.discard)
 
 
+def _build_tool_replay(messages: list[dict[str, Any]]) -> dict[tuple[str, str], str]:
+    """Map (tool_name, json.dumps(args, sort_keys=True)) -> result, from tool_calls/tool
+    message pairs already present in a message list (matched by tool_call_id). Lets a
+    corrected turn that repeats an identical tool call reuse what was actually seen
+    originally — see _execute's `tool_replay` param."""
+    pending: dict[str, tuple[str, str]] = {}
+    replay: dict[tuple[str, str], str] = {}
+    for m in messages:
+        for tc in m.get("tool_calls") or []:
+            try:
+                args = json.loads(tc["function"]["arguments"] or "{}")
+            except json.JSONDecodeError:
+                continue
+            pending[tc["id"]] = (tc["function"]["name"], json.dumps(args, sort_keys=True))
+        if m.get("role") == "tool":
+            key = pending.pop(m.get("tool_call_id"), None)
+            if key is not None:
+                replay[key] = m.get("content") or ""
+    return replay
+
+
 async def _draft_correction(example_id: int) -> None:
     """Draft a corrected response for a thumbs-down training example, in an isolated
     conversation (its own fresh session, not `web`, not reusing any existing chat
-    history) that goes through the same LLM+tool pipeline as a normal turn — including
-    real tool calls if the correction needs them.
+    history) that goes through the same LLM+tool pipeline as a normal turn.
+
+    Tool calls that exactly repeat one already in the original prompt/response replay
+    the original result (see _build_tool_replay) instead of re-running it — avoids
+    drift if the world changed since (e.g. a re-fetched page) and avoids re-triggering
+    something side-effecting. A genuinely new side-effecting tool call (new arguments)
+    is stubbed rather than actually performed (see registry.SIDE_EFFECTING_TOOLS) —
+    this is drafting a training example, not a live user request.
 
     Feeds the original prompt, the original (bad) response, and the user's note, then
     asks for a corrected turn. Writes the result back as `correction` with
@@ -808,12 +857,16 @@ async def _draft_correction(example_id: int) -> None:
         "an accurate final answer."
     )
     context = list(row["prompt"]) + list(row["response"]) + [{"role": "user", "content": correction_request}]
+    tool_replay = _build_tool_replay(list(row["prompt"]) + list(row["response"]))
 
     try:
         await _persist_op(channel, {"op": "ensure_session", "channel": channel})
         root_id = await _persist_op(channel, {"op": "user_msg", "content": correction_request, "hidden": False})
 
-        async for _ in _run_with_fallback(channel, context, root_id, priority="low", can_recover=False):
+        async for _ in _run_with_fallback(
+            channel, context, root_id, priority="low",
+            can_recover=False, allow_side_effects=False, tool_replay=tool_replay,
+        ):
             pass
 
         async with pool.connection() as conn:

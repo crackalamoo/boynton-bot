@@ -122,6 +122,32 @@ async def execute_add_cron_job(
     return f"Created cron job {row['id']}: {name!r} on channel {channel!r} ({schedule_type} {schedule_value!r})"
 
 
+def execute_add_cron_job_stub(
+    name: str,
+    channel: str,
+    prompt: str,
+    schedule_type: str,
+    schedule_value: str,
+) -> str:
+    """Same validation and success message as execute_add_cron_job, without inserting a
+    row — there's no real job, so the id is a placeholder rather than a fabricated int
+    that could be mistaken for one a later tool call could act on."""
+    if schedule_type == "cron":
+        try:
+            croniter(schedule_value)
+        except Exception as e:
+            return f"Error: invalid cron expression {schedule_value!r}: {e}"
+    elif schedule_type == "at":
+        try:
+            _parse_at(schedule_value)
+        except ValueError as e:
+            return f"Error: invalid timestamp {schedule_value!r}: {e}"
+    else:
+        return f"Error: invalid schedule_type {schedule_type!r}, must be 'at' or 'cron'"
+
+    return f"Created cron job stub: {name!r} on channel {channel!r} ({schedule_type} {schedule_value!r})"
+
+
 async def execute_list_cron_jobs() -> str:
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
@@ -151,6 +177,19 @@ async def execute_remove_cron_job(id: int) -> str:
             await cur.execute("DELETE FROM cron_jobs WHERE id = %s RETURNING id", (id,))
             row = await cur.fetchone()
             await conn.commit()
+
+    if row is None:
+        return f"Error: no cron job with id {id}"
+    return f"Removed cron job {id}"
+
+
+async def execute_remove_cron_job_stub(id: int) -> str:
+    """Same existence check and success message as execute_remove_cron_job, without
+    actually deleting the row."""
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute("SELECT id FROM cron_jobs WHERE id = %s", (id,))
+            row = await cur.fetchone()
 
     if row is None:
         return f"Error: no cron job with id {id}"

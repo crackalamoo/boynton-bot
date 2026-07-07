@@ -156,3 +156,20 @@ def execute_write_memory(path: str, content: str) -> str:
 
     return f"Written to {path}"
 
+
+def execute_write_memory_stub(path: str, content: str) -> str:
+    """Same validation and success message as execute_write_memory, without touching disk."""
+    if os.path.normpath(path) == "SOUL.md":
+        return "Error: SOUL.md is read-only"
+    try:
+        full_path = _safe_resolve(path)
+    except ValueError as e:
+        return f"Error: {e}"
+
+    if not content.strip():
+        if os.path.isfile(full_path):
+            return f"Deleted {path}"
+        return f"Error: file '{path}' does not exist"
+
+    return f"Written to {path}"
+

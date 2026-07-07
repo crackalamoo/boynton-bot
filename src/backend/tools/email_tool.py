@@ -50,3 +50,9 @@ def execute_email_tool(subject: str, body: str) -> str:
 
     return f"Email sent to {recipient}: {subject!r}"
 
+
+def execute_email_tool_stub(subject: str, body: str) -> str:
+    """Same success message as execute_email_tool, without actually sending anything."""
+    recipient = os.environ["BOYNTON_EMAIL_RECIPIENT"]
+    return f"Email sent to {recipient}: {subject!r}"
+

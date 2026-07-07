@@ -163,3 +163,9 @@ def execute_bash(command: str, timeout: int = 60) -> str:
 
     return _truncate_output(output)
 
+
+def execute_bash_stub(command: str) -> str:
+    """No honest way to fabricate plausible output for an arbitrary command, so this
+    is explicitly labeled rather than pretending to be a normal result."""
+    return f"[not executed: bash is disabled during correction drafting] {command!r}"
+
