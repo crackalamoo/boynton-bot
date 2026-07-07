@@ -114,6 +114,96 @@ async def test_non_context_length_bad_request_is_not_retried(channel):
                 pass
 
 
+# --- mid-turn recovery: compact prior turns without losing the active turn's own tool output ---
+
+async def test_context_length_exceeded_after_a_tool_call_keeps_the_active_turn_intact(channel):
+    """Rejection on a later round (after a tool call already ran this turn) must
+    compact only prior turns — the active turn's own tool exchange should survive
+    intact in the retried context, not get folded into the lossy summary too."""
+    await _persist_op(channel, {"op": "user_msg", "content": "old backlog", "hidden": False})
+    await _persist_op(channel, {"op": "assistant_msg", "content": "old reply", "hidden": False})
+
+    calls = {"n": 0}
+    retry_contexts: list[list] = []
+
+    async def stream_round(client, model, tool_context, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            yield ("finish", ("", [{"id": "call_0", "name": "lookup", "arguments": "{}"}], "tool_calls"))
+        elif calls["n"] == 2:
+            raise _bad_request_error()
+            yield  # pragma: no cover
+        else:
+            retry_contexts.append(list(tool_context))
+            yield ("finish", ("done", [], "stop"))
+
+    with patch("backend.agent._stream_round", stream_round), \
+         patch("backend.agent.execute_tool", AsyncMock(return_value="tool result data")), \
+         patch("backend.agent._complete", AsyncMock(return_value="forced summary")):
+        async for _ in _execute_with_fallback(channel, "new message"):
+            pass
+
+    assert calls["n"] == 3  # tool round, failed round, recovered round
+
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute("SELECT summary FROM sessions WHERE id = %s", (channel,))
+            session = await cur.fetchone()
+    assert session["summary"] == "forced summary"  # prior turn got folded
+
+    retry_context = retry_contexts[0]
+    assert any(m.get("role") == "user" and m.get("content") == "new message" for m in retry_context)
+    assert any(m.get("role") == "tool" and m.get("content") == "tool result data" for m in retry_context)
+
+
+async def test_context_length_exceeded_truncates_active_turn_if_compacting_prior_turns_is_not_enough(channel):
+    """If the active turn's own tool output is oversized enough on its own, compacting
+    prior turns isn't sufficient — the active turn's own messages must then be
+    progressively truncated (never dropped), same as the summarization-input path."""
+    calls = {"n": 0}
+    retry_contexts: list[list] = []
+    huge_result = "z" * (CHAR_BUDGET + 20_000)
+
+    async def stream_round(client, model, tool_context, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            yield ("finish", ("", [{"id": "call_0", "name": "lookup", "arguments": "{}"}], "tool_calls"))
+        elif calls["n"] in (2, 3):
+            raise _bad_request_error()
+            yield  # pragma: no cover
+        else:
+            retry_contexts.append(list(tool_context))
+            yield ("finish", ("done", [], "stop"))
+
+    with patch("backend.agent._stream_round", stream_round), \
+         patch("backend.agent.execute_tool", AsyncMock(return_value=huge_result)), \
+         patch("backend.agent._complete", AsyncMock(return_value="forced summary")):
+        async for _ in _execute_with_fallback(channel, "fetch it"):
+            pass
+
+    assert calls["n"] == 4  # tool round, compact-only retry (still too big), truncated retry, success
+
+    retry_context = retry_contexts[0]
+    tool_messages = [m for m in retry_context if m.get("role") == "tool"]
+    assert len(tool_messages) == 1
+    assert "truncated" in tool_messages[0]["content"]
+    assert len(tool_messages[0]["content"]) < len(huge_result)
+
+
+async def test_context_length_exceeded_propagates_once_recovery_is_exhausted(channel):
+    """If it's still too big after both recovery stages, that's a real bug (compaction/
+    truncation not actually shrinking things) — it must surface loudly, not loop."""
+    async def always_fails(*args, **kwargs):
+        raise _bad_request_error()
+        yield  # pragma: no cover
+
+    with patch("backend.agent._stream_round", always_fails), \
+         patch("backend.agent._complete", AsyncMock(return_value="forced summary")):
+        with pytest.raises(BadRequestError):
+            async for _ in _execute_with_fallback(channel, "hi"):
+                pass
+
+
 # --- budgeted rendering for the summarization prompt ---
 
 def test_budget_unsummarized_lines_leaves_small_backlog_untouched():

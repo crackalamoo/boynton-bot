@@ -149,39 +149,82 @@ def _estimate_tokens(messages):
     return sum((len(m.get("content") or "") + len(m.get("arguments") or "")) // CHARS_PER_TOKEN_ESTIMATE for m in messages)
 
 
-def _budget_unsummarized_lines(unsummarized: list[dict[str, Any]]) -> str:
-    """Render unsummarized rows (oldest first) as text for the summarization prompt.
+def _truncate_texts_to_budget(texts: list[str], budget_tokens: int) -> list[str]:
+    """Truncate texts from the front forward until the total is under budget_tokens.
 
-    Truncates from the oldest message forward if over SUMMARIZE_TOKEN_BUDGET, so a
-    single oversized message (e.g. a large tool result) can't blow the summarization
-    call past qwen's hard ceiling. Never drops a message entirely — recency is what
-    matters most, so newest content (including the message that triggered this
-    compaction) survives intact for as long as the budget allows.
+    Never drops a text entirely (floored at MIN_SUMMARY_MESSAGE_CHARS) — recency is
+    what matters most, so callers should pass oldest-first, and the newest text
+    survives intact for as long as the budget allows.
     """
-    rendered = [f"{m['role'].upper()}: {m['content'] or ''}" for m in unsummarized]
-    total_tokens = _estimate_tokens([{"content": line} for line in rendered])
-    if total_tokens <= SUMMARIZE_TOKEN_BUDGET:
-        return "\n".join(rendered)
+    texts = list(texts)
+    total_tokens = _estimate_tokens([{"content": t} for t in texts])
+    if total_tokens <= budget_tokens:
+        return texts
 
-    excess_tokens = total_tokens - SUMMARIZE_TOKEN_BUDGET
-    for i, line in enumerate(rendered):
+    excess_tokens = total_tokens - budget_tokens
+    for i, text in enumerate(texts):
         if excess_tokens <= 0:
             break
-        cuttable_chars = len(line) - MIN_SUMMARY_MESSAGE_CHARS
+        cuttable_chars = len(text) - MIN_SUMMARY_MESSAGE_CHARS
         if cuttable_chars <= 0:
             continue
-        line_tokens = _estimate_tokens([{"content": line}])
+        text_tokens = _estimate_tokens([{"content": text}])
         cut_chars = min(cuttable_chars, excess_tokens * CHARS_PER_TOKEN_ESTIMATE)
-        keep = len(line) - cut_chars
-        truncated = f"{line[:keep]}... [truncated {cut_chars} chars]"
-        rendered[i] = truncated
+        keep = len(text) - cut_chars
+        truncated = f"{text[:keep]}... [truncated {cut_chars} chars]"
+        texts[i] = truncated
         new_tokens = _estimate_tokens([{"content": truncated}])
-        excess_tokens -= max(line_tokens - new_tokens, 0)
-    return "\n".join(rendered)
+        excess_tokens -= max(text_tokens - new_tokens, 0)
+    return texts
 
 
-async def _do_summarize(conn, cur, client, model: str, channel: str, session: dict[str, Any], unsummarized: list[dict[str, Any]]) -> dict[str, Any]:
-    """Perform summarization of unsummarized messages and write the new summary to the sessions table.
+def _budget_unsummarized_lines(unsummarized: list[dict[str, Any]]) -> str:
+    """Render unsummarized rows (oldest first) as text for the summarization prompt,
+    truncated to fit SUMMARIZE_TOKEN_BUDGET."""
+    rendered = [f"{m['role'].upper()}: {m['content'] or ''}" for m in unsummarized]
+    return "\n".join(_truncate_texts_to_budget(rendered, SUMMARIZE_TOKEN_BUDGET))
+
+
+def _truncate_rows_to_budget(rows: list[dict[str, Any]], budget_tokens: int) -> list[dict[str, Any]]:
+    """Same as _truncate_texts_to_budget, but truncates each row's `content` field
+    in place (returning shallow copies) instead of a rendered/joined string, so the
+    rows can still be fed through _reconstruct_messages afterward."""
+    contents = _truncate_texts_to_budget([r.get("content") or "" for r in rows], budget_tokens)
+    return [{**r, "content": c} for r, c in zip(rows, contents)]
+
+
+_MESSAGE_COLUMNS = "id, role, content, tool_name, arguments, created_at"
+
+
+async def _fetch_messages_since(cur, channel: str, since, before_id: int | None = None) -> list[dict[str, Any]]:
+    """Fetch NOT hidden messages for a channel, oldest first.
+
+    `since` restricts to created_at > since (pass the session's summary_created_at,
+    or None for "from the beginning"). `before_id` additionally restricts to id <
+    before_id (pass a turn's starting message id to exclude that turn onward).
+    """
+    query = f"SELECT {_MESSAGE_COLUMNS} FROM messages WHERE session_id = %s AND NOT hidden"
+    params: list[Any] = [channel]
+    if since:
+        query += " AND created_at > %s"
+        params.append(since)
+    if before_id is not None:
+        query += " AND id < %s"
+        params.append(before_id)
+    query += " ORDER BY id ASC"
+    await cur.execute(query, params)
+    return await cur.fetchall()
+
+
+async def _do_summarize(
+    conn, cur, client, model: str, channel: str, session: dict[str, Any],
+    unsummarized: list[dict[str, Any]], cutoff=None,
+) -> dict[str, Any]:
+    """Perform summarization of unsummarized messages and write the new summary to the
+    sessions table. `cutoff` becomes the new summary_created_at — defaults to now()
+    (the whole backlog was folded). Pass an explicit cutoff (e.g. the created_at of the
+    last folded row) when only folding a prefix of the backlog, so messages after it
+    aren't mistaken for already-summarized.
     Returns the refreshed session row.
     """
     prior = f"Prior summary:\n{session['summary']}\n\n" if session["summary"] else ""
@@ -190,19 +233,27 @@ async def _do_summarize(conn, cur, client, model: str, channel: str, session: di
         "role": "user",
         "content": f"Summarize this conversation concisely, preserving key facts and context:\n\n{prior}{lines}"
     }])
-    await cur.execute(
-        "UPDATE sessions SET summary = %s, summary_created_at = now() WHERE id = %s",
-        (new_summary, channel)
-    )
+    if cutoff is None:
+        await cur.execute(
+            "UPDATE sessions SET summary = %s, summary_created_at = now() WHERE id = %s",
+            (new_summary, channel)
+        )
+    else:
+        await cur.execute(
+            "UPDATE sessions SET summary = %s, summary_created_at = %s WHERE id = %s",
+            (new_summary, cutoff, channel)
+        )
     await conn.commit()
     await cur.execute("SELECT * FROM sessions WHERE id = %s", (channel,))
     return await cur.fetchone()
 
 
-async def _compact(channel: str) -> bool:
+async def _compact(channel: str, before_id: int | None = None) -> bool:
     """Force summarization of the current conversation for this channel.
 
     Uses the same DB + summarization logic as the automatic path in _build_context.
+    `before_id`, if given, folds only messages up to (not including) that message id
+    — used to compact everything before the active turn without touching it.
     Returns True if summarization was performed, False if there was nothing to summarize.
     """
     client, model = CLIENTS[0]
@@ -214,25 +265,13 @@ async def _compact(channel: str) -> bool:
             if session is None:
                 return False
 
-            # Fetch unsummarized messages (same logic as _build_context)
-            if session["summary_created_at"]:
-                await cur.execute(
-                    """SELECT role, content, arguments FROM messages
-                       WHERE session_id = %s AND created_at > %s AND NOT hidden
-                       ORDER BY id ASC""",
-                    (channel, session["summary_created_at"])
-                )
-            else:
-                await cur.execute(
-                    "SELECT role, content, arguments FROM messages WHERE session_id = %s AND NOT hidden ORDER BY id ASC",
-                    (channel,)
-                )
-            unsummarized = await cur.fetchall()
+            unsummarized = await _fetch_messages_since(cur, channel, session["summary_created_at"], before_id)
 
             if not unsummarized:
                 return False
 
-            await _do_summarize(conn, cur, client, model, channel, session, unsummarized)
+            cutoff = unsummarized[-1]["created_at"] if before_id is not None else None
+            await _do_summarize(conn, cur, client, model, channel, session, unsummarized, cutoff)
             return True
 
 
@@ -373,6 +412,21 @@ async def build_training_example(message_id: int) -> dict[str, Any]:
     return {"prompt": prompt, "response": response}
 
 
+def _assemble_context(session: dict[str, Any]) -> list[dict[str, Any]]:
+    """System prompt + soul + memory index + summary (if any) — the fixed prefix that
+    precedes reconstructed message rows in every context build."""
+    context = [{"role": "system", "content": SYSTEM_PROMPT}]
+    soul = load_soul()
+    if soul:
+        context.append({"role": "system", "content": soul})
+    memory_index = load_memory_index()
+    if memory_index:
+        context.append({"role": "system", "content": f"[Memory index]\n{memory_index}"})
+    if session["summary"]:
+        context.append({"role": "system", "content": f"[Summary of earlier conversation]: {session['summary']}"})
+    return context
+
+
 async def _build_context(client, model: str, channel: str, user_message: str) -> tuple[list[dict[str, Any]], bool]:
     """Read DB to build the LLM context list, including inline summarization if needed.
 
@@ -392,50 +446,17 @@ async def _build_context(client, model: str, channel: str, user_message: str) ->
 
             did_summarize = False
 
-            # Check whether summarization is needed
-            if session["summary_created_at"]:
-                await cur.execute(
-                    """SELECT role, content, arguments FROM messages
-                       WHERE session_id = %s AND created_at > %s AND NOT hidden
-                       ORDER BY id ASC""",
-                    (channel, session["summary_created_at"])
-                )
-            else:
-                await cur.execute(
-                    "SELECT role, content, arguments FROM messages WHERE session_id = %s AND NOT hidden ORDER BY id ASC",
-                    (channel,)
-                )
-            unsummarized = await cur.fetchall()
-            # Note: user_message is NOT in DB yet, so no [:-1] needed
+            # user_message is NOT in DB yet, so this naturally excludes it
+            unsummarized = await _fetch_messages_since(cur, channel, session["summary_created_at"])
 
             if _estimate_tokens(unsummarized) > SUMMARIZATION_THRESHOLD:
                 session = await _do_summarize(conn, cur, client, model, channel, session, unsummarized)
                 did_summarize = True
-
-            # Build context: system prompt + optional summary + messages after summary cutoff
-            if session["summary_created_at"]:
-                await cur.execute(
-                    """SELECT role, content, tool_name, arguments FROM messages
-                       WHERE session_id = %s AND created_at > %s AND NOT hidden
-                       ORDER BY id ASC""",
-                    (channel, session["summary_created_at"])
-                )
+                recent = await _fetch_messages_since(cur, channel, session["summary_created_at"])
             else:
-                await cur.execute(
-                    "SELECT role, content, tool_name, arguments FROM messages WHERE session_id = %s AND NOT hidden ORDER BY id ASC",
-                    (channel,)
-                )
-            recent = await cur.fetchall()
+                recent = unsummarized
 
-            context = [{"role": "system", "content": SYSTEM_PROMPT}]
-            soul = load_soul()
-            if soul:
-                context.append({"role": "system", "content": soul})
-            memory_index = load_memory_index()
-            if memory_index:
-                context.append({"role": "system", "content": f"[Memory index]\n{memory_index}"})
-            if session["summary"]:
-                context.append({"role": "system", "content": f"[Summary of earlier conversation]: {session['summary']}"})
+            context = _assemble_context(session)
             context_messages, _ = _reconstruct_messages(recent)
             context += context_messages
 
@@ -445,20 +466,56 @@ async def _build_context(client, model: str, channel: str, user_message: str) ->
     return context, did_summarize
 
 
+async def _recover_context(channel: str, turn_start_id: int, truncate_active_turn: bool) -> list[dict[str, Any]]:
+    """Rebuild tool_context after a mid-turn context_length_exceeded.
+
+    Compacts everything strictly before the active turn (before_id=turn_start_id) —
+    prior turns get folded into the lossy summary, but the active turn's own tool
+    output is never folded, since that's the freshest content the model is actively
+    working with. If the active turn's own messages are still too big on their own
+    (truncate_active_turn=True, meaning a first recovery attempt already ran and
+    wasn't enough), they get progressively truncated the same way the summarization
+    prompt itself does, oldest-in-turn first, never fully dropped.
+    """
+    await _compact(channel, before_id=turn_start_id)
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute("SELECT * FROM sessions WHERE id = %s", (channel,))
+            session = await cur.fetchone()
+            recent = await _fetch_messages_since(cur, channel, session["summary_created_at"])
+
+    if truncate_active_turn:
+        recent = _truncate_rows_to_budget(recent, SUMMARIZE_TOKEN_BUDGET)
+
+    context_messages, _ = _reconstruct_messages(recent)
+    return _assemble_context(session) + context_messages
+
+
 async def _execute(
     client,
     model: str,
     channel: str,
     context: list[dict[str, Any]],
     did_summarize: bool,
+    turn_start_id: int,
     max_tokens: int | None = None,
     priority: str = "high",
+    can_recover: bool = True,
 ) -> AsyncGenerator[str, None]:
     """LLM + tool loop generator.
 
     - `context` is the already-built LLM context (from _build_context), including the
       not-yet-persisted user_message appended at the end. This function does NOT read
-      the DB.
+      the DB, except to recover from a mid-turn context_length_exceeded (see below).
+    - `turn_start_id` is the id of this turn's starting (already-persisted) user
+      message — the boundary used to compact prior turns without touching this one.
+    - `can_recover` gates mid-turn context_length_exceeded recovery. Recovery rebuilds
+      `tool_context` from what's in the DB, so it only makes sense when `context` is
+      itself derived from the DB (the normal chat path). Callers that pass in a
+      partly-synthetic `context` not fully reflected in the DB (e.g. correction
+      drafting, which prepends an original prompt/response that was never persisted
+      to this channel) must pass False — recovering would silently rebuild from DB
+      and drop the synthetic part instead of actually shrinking it.
     - Runs the full LLM + tool loop, persisting every op immediately via `_persist_op`
       as it happens (assistant messages, tool calls, tool results).
     - Yields SSE strings live as events happen.
@@ -467,20 +524,34 @@ async def _execute(
     tool_called = False
     n_tool_calls = 0
     final_message_id: int | None = None
+    recovery_stage = 0  # 0 = none yet, 1 = compacted prior turns, 2 = also truncated this turn
     while True:
         n_tool_calls += 1
         tools = TOOLS if n_tool_calls <= MAX_TOOL_ROUNDS else None
         round_content: list[str] = []
         tool_calls = []
         finish_reason = "stop"
-        async for kind, value in _stream_round(client, model, tool_context, tools=tools, max_tokens=max_tokens, priority=priority):
-            if kind == "token":
-                round_content.append(value)
-                yield "data: " + json.dumps({"type": "token", "content": value}) + "\n\n"
-            elif kind == "reasoning":
-                yield "data: " + json.dumps({"type": "reasoning", "content": value}) + "\n\n"
-            else:
-                _, tool_calls, finish_reason = value
+        try:
+            async for kind, value in _stream_round(client, model, tool_context, tools=tools, max_tokens=max_tokens, priority=priority):
+                if kind == "token":
+                    round_content.append(value)
+                    yield "data: " + json.dumps({"type": "token", "content": value}) + "\n\n"
+                elif kind == "reasoning":
+                    yield "data: " + json.dumps({"type": "reasoning", "content": value}) + "\n\n"
+                else:
+                    _, tool_calls, finish_reason = value
+        except BadRequestError as e:
+            # Not a size problem, recovery isn't safe for this caller, or we already
+            # tried both recovery stages for this turn and it's still too big — the
+            # last case means compaction/truncation itself is broken, which is a real
+            # bug to surface, not a case to keep retrying.
+            if not _is_context_length_exceeded(e) or not can_recover or recovery_stage >= 2:
+                raise
+            recovery_stage += 1
+            tool_context = await _recover_context(channel, turn_start_id, truncate_active_turn=recovery_stage == 2)
+            did_summarize = True
+            n_tool_calls -= 1  # this attempt didn't produce a real round
+            continue
 
         text = "".join(round_content)
 
@@ -546,16 +617,18 @@ async def _execute(
 async def _run_with_fallback(
     channel: str,
     context: list[dict[str, Any]],
+    turn_start_id: int,
     did_summarize: bool = False,
     max_tokens: int | None = None,
     priority: str = "high",
+    can_recover: bool = True,
 ) -> AsyncGenerator[str, None]:
     """Run `_execute` over `CLIENTS` in order, falling back to the next client on a
     connection error that happened before anything was committed for this turn.
     """
     last_exc: Exception | None = None
     for client, model in CLIENTS:
-        gen = _execute(client, model, channel, context, did_summarize, max_tokens=max_tokens, priority=priority)
+        gen = _execute(client, model, channel, context, did_summarize, turn_start_id, max_tokens=max_tokens, priority=priority, can_recover=can_recover)
         committed = False
         try:
             async for event in gen:
@@ -592,22 +665,13 @@ async def _execute_with_fallback(
     context, did_summarize = await _build_context(client0, model0, channel, user_message)
 
     await _persist_op(channel, {"op": "ensure_session", "channel": channel})
-    await _persist_op(channel, {"op": "user_msg", "content": user_message, "hidden": False})
+    turn_start_id = await _persist_op(channel, {"op": "user_msg", "content": user_message, "hidden": False})
 
-    try:
-        async for event in _run_with_fallback(channel, context, did_summarize, max_tokens=max_tokens, priority=priority):
-            yield event
-    except BadRequestError as e:
-        if not _is_context_length_exceeded(e):
-            raise
-        # Compact folds the persisted user message into the summary, so
-        # re-passing user_message rebuilds the turn instead of just its gist.
-        # Assumes rejection on the turn's first round; a later tool round
-        # would re-stream already-yielded output on retry.
-        await _compact(channel)
-        context, _ = await _build_context(client0, model0, channel, user_message)
-        async for event in _run_with_fallback(channel, context, True, max_tokens=max_tokens, priority=priority):
-            yield event
+    # context_length_exceeded is recovered from inside _execute itself (compacting
+    # prior turns, then truncating the active turn if that's still not enough) —
+    # no fallback needed here.
+    async for event in _run_with_fallback(channel, context, turn_start_id, did_summarize, max_tokens=max_tokens, priority=priority):
+        yield event
 
 
 async def _run_chat_job(channel: str, job: Job) -> None:
@@ -749,7 +813,7 @@ async def _draft_correction(example_id: int) -> None:
         await _persist_op(channel, {"op": "ensure_session", "channel": channel})
         root_id = await _persist_op(channel, {"op": "user_msg", "content": correction_request, "hidden": False})
 
-        async for _ in _run_with_fallback(channel, context, priority="low"):
+        async for _ in _run_with_fallback(channel, context, root_id, priority="low", can_recover=False):
             pass
 
         async with pool.connection() as conn:
