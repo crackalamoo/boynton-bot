@@ -81,4 +81,10 @@ def execute_web_fetch(url: str) -> str:
     if len(text) > _MAX_LENGTH:
         text = text[:_MAX_LENGTH] + "[truncated]"
 
+    # Mislabeled/corrupted charsets can make httpx's auto-decode of
+    # response.text produce literal NUL bytes. Postgres text columns can't
+    # store NUL (0x00) at all, so strip them here to guarantee this tool
+    # never returns a string that would blow up the later DB insert.
+    text = text.replace("\x00", "")
+
     return text

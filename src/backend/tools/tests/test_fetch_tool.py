@@ -1,6 +1,6 @@
 from bs4 import BeautifulSoup
 
-from backend.tools.fetch_tool import _extract_text
+from backend.tools.fetch_tool import _extract_text, execute_web_fetch
 
 
 def test_extract_text_preserves_links_inside_table_cells():
@@ -73,3 +73,23 @@ def test_extract_text_images_and_script_style_stripped():
     assert "alert('hi')" not in text
     assert "A picture" in text
     assert "Hello world" in text
+
+
+def test_execute_web_fetch_strips_nul_bytes(monkeypatch):
+    # A mislabeled/corrupted charset can make httpx's auto-decode of
+    # response.text embed literal NUL bytes. Postgres text columns reject
+    # NUL outright, so web_fetch must never return them.
+    class FakeResponse:
+        status_code = 200
+        text = "<p>Hello\x00 world</p>"
+        url = "https://example.com/"
+
+    def fake_get(url, headers=None, timeout=None, follow_redirects=None):
+        return FakeResponse()
+
+    monkeypatch.setattr("backend.tools.fetch_tool.httpx.get", fake_get)
+
+    result = execute_web_fetch("https://example.com/")
+
+    assert "\x00" not in result
+    assert "Hello" in result and "world" in result
