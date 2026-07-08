@@ -1,10 +1,27 @@
+import httpx
 import pytest
+from openai import BadRequestError
 from unittest.mock import AsyncMock, patch
 from psycopg.rows import dict_row
 
 import backend.agent as agent_module
 from backend.agent import Agent, PRIMARY_MODEL, _persist_op, build_training_example
 from backend.database import pool
+
+
+def _overflow_error(max_tokens: int = 40_000, overage: int = 5_000) -> BadRequestError:
+    request = httpx.Request("POST", "http://localhost/v1/chat/completions")
+    body = {
+        "error": {
+            "message": f"This model's maximum context length is {max_tokens} tokens. "
+                       f"However, your messages resulted in {max_tokens + overage} tokens.",
+            "type": "invalid_request_error",
+            "param": "messages",
+            "code": "context_length_exceeded",
+        }
+    }
+    response = httpx.Response(400, request=request, json=body)
+    return BadRequestError("context length exceeded", response=response, body=body)
 
 
 async def _drain_background_tasks():
@@ -251,6 +268,52 @@ async def test_add_feedback_note_marks_error_on_failure(agent, channel):
         yield  # pragma: no cover - unreachable, makes this an async generator
 
     with patch("backend.agent._stream_round", broken_stream):
+        await agent.add_feedback_note(row["id"], "bad note")
+        await _drain_background_tasks()
+
+    final = await agent.get_feedback(row["id"])
+    assert final["correction_status"] == "error"
+
+
+async def test_add_feedback_note_retries_with_smaller_budget_on_context_length_exceeded(agent, channel):
+    """Drafting's context is synthetic (spliced from training_examples, not reflected
+    in this channel's DB), so it can't use the normal mid-turn recovery — a real
+    context_length_exceeded must instead be handled locally: shrink by the reported
+    overage and retry, bounded."""
+    await _persist_op(channel, {"op": "user_msg", "content": "what's the weather", "hidden": False})
+    reply_id = await _persist_op(channel, {"op": "assistant_msg", "content": "it's sunny", "hidden": False, "model": PRIMARY_MODEL})
+    row = await agent.record_feedback(reply_id, "down")
+
+    calls = {"n": 0}
+
+    async def stream_round(client, model, tool_context, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise _overflow_error()
+            yield  # pragma: no cover
+        yield ("token", "Corrected answer")
+        yield ("finish", ("Corrected answer", [], "stop"))
+
+    with patch("backend.agent._stream_round", stream_round):
+        await agent.add_feedback_note(row["id"], "should have checked a real source")
+        await _drain_background_tasks()
+
+    assert calls["n"] == 2
+    final = await agent.get_feedback(row["id"])
+    assert final["correction_status"] == "drafted"
+    assert final["correction"] == [{"role": "assistant", "content": "Corrected answer"}]
+
+
+async def test_add_feedback_note_marks_error_once_retries_are_exhausted(agent, channel):
+    await _persist_op(channel, {"op": "user_msg", "content": "what's the weather", "hidden": False})
+    reply_id = await _persist_op(channel, {"op": "assistant_msg", "content": "it's sunny", "hidden": False, "model": PRIMARY_MODEL})
+    row = await agent.record_feedback(reply_id, "down")
+
+    async def always_overflows(*args, **kwargs):
+        raise _overflow_error()
+        yield  # pragma: no cover
+
+    with patch("backend.agent._stream_round", always_overflows):
         await agent.add_feedback_note(row["id"], "bad note")
         await _drain_background_tasks()
 

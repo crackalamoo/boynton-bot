@@ -9,6 +9,7 @@ from backend.job_queue import Job, JobQueue, stream_queue
 import json
 import logging
 import os
+import re
 from collections.abc import AsyncGenerator
 from typing import Any
 
@@ -178,11 +179,12 @@ def _truncate_texts_to_budget(texts: list[str], budget_tokens: int) -> list[str]
     return texts
 
 
-def _budget_unsummarized_lines(unsummarized: list[dict[str, Any]]) -> str:
+def _budget_unsummarized_lines(unsummarized: list[dict[str, Any]], budget_tokens: int = SUMMARIZE_TOKEN_BUDGET) -> str:
     """Render unsummarized rows (oldest first) as text for the summarization prompt,
-    truncated to fit SUMMARIZE_TOKEN_BUDGET."""
+    truncated to fit budget_tokens (defaults to SUMMARIZE_TOKEN_BUDGET — callers retrying
+    after an actual context_length_exceeded pass a tighter budget)."""
     rendered = [f"{m['role'].upper()}: {m['content'] or ''}" for m in unsummarized]
-    return "\n".join(_truncate_texts_to_budget(rendered, SUMMARIZE_TOKEN_BUDGET))
+    return "\n".join(_truncate_texts_to_budget(rendered, budget_tokens))
 
 
 def _truncate_rows_to_budget(rows: list[dict[str, Any]], budget_tokens: int) -> list[dict[str, Any]]:
@@ -228,11 +230,27 @@ async def _do_summarize(
     Returns the refreshed session row.
     """
     prior = f"Prior summary:\n{session['summary']}\n\n" if session["summary"] else ""
-    lines = _budget_unsummarized_lines(unsummarized)
-    new_summary = await _complete(client, model, [{
-        "role": "user",
-        "content": f"Summarize this conversation concisely, preserving key facts and context:\n\n{prior}{lines}"
-    }])
+
+    # The char-based token estimate behind SUMMARIZE_TOKEN_BUDGET can undercount dense
+    # content (links, JSON, tool output), so the summarization call itself can still
+    # overflow the model's real limit. Rather than guess a bigger safety margin up
+    # front, react to an actual context_length_exceeded: shrink the unsummarized-lines
+    # budget by the real reported overage (plus a cushion) and retry, bounded — prior
+    # is never touched, so nothing is lost from the already-compressed running summary.
+    budget = SUMMARIZE_TOKEN_BUDGET
+    for attempt in range(3):
+        lines = _budget_unsummarized_lines(unsummarized, budget)
+        try:
+            new_summary = await _complete(client, model, [{
+                "role": "user",
+                "content": f"Summarize this conversation concisely, preserving key facts and context:\n\n{prior}{lines}"
+            }])
+            break
+        except BadRequestError as e:
+            if not _is_context_length_exceeded(e) or attempt == 2:
+                raise
+            overage = _context_length_overage(e)
+            budget -= (overage + CONTEXT_LENGTH_OVERAGE_MARGIN) if overage is not None else budget // 2
     if cutoff is None:
         await cur.execute(
             "UPDATE sessions SET summary = %s, summary_created_at = now() WHERE id = %s",
@@ -677,6 +695,35 @@ def _is_context_length_exceeded(e: BadRequestError) -> bool:
     return code == "context_length_exceeded"
 
 
+_CONTEXT_LENGTH_OVERAGE_RE = re.compile(r"maximum context length is (\d+) tokens.*?resulted in (\d+) tokens")
+
+# Cushion added on top of the measured overage — the truncation we retry with is
+# still governed by the same char-based token estimate, which can itself be off by
+# some margin, so cut a bit more than the exact reported overage to raise the odds
+# a single retry is enough.
+CONTEXT_LENGTH_OVERAGE_MARGIN = 1_000  # tokens
+
+
+def _context_length_overage(e: BadRequestError) -> int | None:
+    """Parse the real (actual_tokens - max_tokens) overage out of a
+    context_length_exceeded error's message, e.g. "This model's maximum context
+    length is 50000 tokens. However, your messages resulted in 51486 tokens." ->
+    1486. Returns None if the message doesn't match this shape, so callers can
+    fall back to a fixed-size cut instead of guessing wrong from a bad parse."""
+    body = getattr(e, "body", None)
+    if not isinstance(body, dict):
+        return None
+    error = body.get("error")
+    message = error.get("message") if isinstance(error, dict) else None
+    if not isinstance(message, str):
+        return None
+    m = _CONTEXT_LENGTH_OVERAGE_RE.search(message)
+    if not m:
+        return None
+    max_tokens, actual_tokens = int(m.group(1)), int(m.group(2))
+    return actual_tokens - max_tokens
+
+
 async def _execute_with_fallback(
     channel: str,
     user_message: str,
@@ -871,8 +918,9 @@ async def _draft_correction(example_id: int) -> None:
         # progressively tighter truncation of the original turn, bounded (not
         # open-ended) the same way mid-turn recovery is. A char-based token estimate
         # is unreliable for link/JSON-dense content (see CHARS_PER_TOKEN_ESTIMATE), so
-        # this doesn't try to precompute the right budget up front — it just backs off
-        # on an actual overflow.
+        # this doesn't try to precompute the right budget up front — it backs off on an
+        # actual overflow, by the real reported overage (plus a cushion) rather than an
+        # arbitrary fraction, so one retry is usually enough.
         budget: int | None = None
         turn = original_turn
         for attempt in range(3):
@@ -894,7 +942,9 @@ async def _draft_correction(example_id: int) -> None:
                     async with conn.cursor() as cur:
                         await cur.execute("DELETE FROM messages WHERE session_id = %s AND id > %s", (channel, root_id))
                         await conn.commit()
-                budget = (budget or SUMMARIZE_TOKEN_BUDGET) // 2
+                overage = _context_length_overage(e)
+                current_budget = budget if budget is not None else _estimate_tokens(turn)
+                budget = current_budget - (overage + CONTEXT_LENGTH_OVERAGE_MARGIN) if overage is not None else current_budget // 2
                 turn = _truncate_rows_to_budget(original_turn, budget)
 
         async with pool.connection() as conn:

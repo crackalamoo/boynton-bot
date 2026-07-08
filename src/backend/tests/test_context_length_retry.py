@@ -10,6 +10,8 @@ from backend.agent import (
     SUMMARIZE_TOKEN_BUDGET,
     _budget_unsummarized_lines,
     _compact,
+    _context_length_overage,
+    _do_summarize,
     _execute_with_fallback,
     _is_context_length_exceeded,
     _persist_op,
@@ -54,6 +56,28 @@ def test_handles_missing_body_gracefully():
     response = httpx.Response(400, request=request, text="not json")
     err = BadRequestError("boom", response=response, body=None)
     assert _is_context_length_exceeded(err) is False
+
+
+# --- _context_length_overage unit tests ---
+
+def test_context_length_overage_parses_real_numbers():
+    # _bad_request_error() reports NORMAL_MAX_PROMPT_TOKENS + 5000 tokens used.
+    assert _context_length_overage(_bad_request_error()) == 5000
+
+
+def test_context_length_overage_returns_none_for_unparsable_message():
+    request = httpx.Request("POST", "http://localhost/v1/chat/completions")
+    body = {"error": {"message": "something went wrong", "code": "context_length_exceeded"}}
+    response = httpx.Response(400, request=request, json=body)
+    err = BadRequestError("boom", response=response, body=body)
+    assert _context_length_overage(err) is None
+
+
+def test_context_length_overage_returns_none_for_missing_body():
+    request = httpx.Request("POST", "http://localhost/v1/chat/completions")
+    response = httpx.Response(400, request=request, text="not json")
+    err = BadRequestError("boom", response=response, body=None)
+    assert _context_length_overage(err) is None
 
 
 # --- retry-after-compact integration ---
@@ -276,3 +300,70 @@ async def test_compact_survives_a_single_oversized_message(channel):
 
     assert len(captured_prompt["content"]) < len(huge_tool_result)
     assert "truncated" in captured_prompt["content"]
+
+
+# --- _do_summarize: retry with a tighter budget on an actual context_length_exceeded ---
+
+async def test_do_summarize_shrinks_budget_by_real_overage_on_retry(channel):
+    unsummarized = [{"role": "user", "content": "z" * 200_000}]
+    calls = {"n": 0}
+    seen_lines: list[str] = []
+
+    async def fake_complete(client, model, messages):
+        calls["n"] += 1
+        seen_lines.append(messages[0]["content"])
+        if calls["n"] == 1:
+            raise _bad_request_error()
+        return "summary text"
+
+    session = {"summary": None}
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            with patch("backend.agent._complete", fake_complete):
+                result = await _do_summarize(conn, cur, None, "model", channel, session, unsummarized)
+
+    assert calls["n"] == 2
+    assert result["summary"] == "summary text"
+    # the retry's budget was cut by the real reported overage, not a blind guess —
+    # the retried prompt should come out visibly smaller than the first attempt's.
+    assert len(seen_lines[1]) < len(seen_lines[0])
+
+
+async def test_do_summarize_never_truncates_the_prior_summary(channel):
+    """The old summary is already-compressed running memory, not raw backlog — a
+    retry must shrink the unsummarized lines, never touch prior in full."""
+    huge_prior = "p" * 200_000
+    session = {"summary": huge_prior}
+    unsummarized = [{"role": "user", "content": "hi"}]
+    calls = {"n": 0}
+    seen_messages: list[str] = []
+
+    async def fake_complete(client, model, messages):
+        calls["n"] += 1
+        seen_messages.append(messages[0]["content"])
+        if calls["n"] == 1:
+            raise _bad_request_error()
+        return "summary text"
+
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            with patch("backend.agent._complete", fake_complete):
+                await _do_summarize(conn, cur, None, "model", channel, session, unsummarized)
+
+    assert calls["n"] == 2
+    for content in seen_messages:
+        assert huge_prior in content
+
+
+async def test_do_summarize_propagates_once_retries_are_exhausted(channel):
+    session = {"summary": None}
+    unsummarized = [{"role": "user", "content": "hi"}]
+
+    async def always_fails(client, model, messages):
+        raise _bad_request_error()
+
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            with patch("backend.agent._complete", always_fails):
+                with pytest.raises(BadRequestError):
+                    await _do_summarize(conn, cur, None, "model", channel, session, unsummarized)
