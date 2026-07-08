@@ -856,18 +856,46 @@ async def _draft_correction(example_id: int) -> None:
         "requires it (e.g. re-fetching a page to get accurate information), then give "
         "an accurate final answer."
     )
-    context = list(row["prompt"]) + list(row["response"]) + [{"role": "user", "content": correction_request}]
-    tool_replay = _build_tool_replay(list(row["prompt"]) + list(row["response"]))
+    original_turn = list(row["prompt"]) + list(row["response"])
+    tool_replay = _build_tool_replay(original_turn)
 
     try:
         await _persist_op(channel, {"op": "ensure_session", "channel": channel})
         root_id = await _persist_op(channel, {"op": "user_msg", "content": correction_request, "hidden": False})
 
-        async for _ in _run_with_fallback(
-            channel, context, root_id, priority="low",
-            can_recover=False, allow_side_effects=False, tool_replay=tool_replay,
-        ):
-            pass
+        # The stored prompt was under budget when the original turn ran, but that's no
+        # guarantee prompt+response+correction_request still is. Unlike the normal chat
+        # path, this context can't lean on mid-turn recovery (see can_recover=False
+        # below) since it's synthetic and not reflected in the DB — so a
+        # context_length_exceeded here is handled locally instead: retry with
+        # progressively tighter truncation of the original turn, bounded (not
+        # open-ended) the same way mid-turn recovery is. A char-based token estimate
+        # is unreliable for link/JSON-dense content (see CHARS_PER_TOKEN_ESTIMATE), so
+        # this doesn't try to precompute the right budget up front — it just backs off
+        # on an actual overflow.
+        budget: int | None = None
+        turn = original_turn
+        for attempt in range(3):
+            context = turn + [{"role": "user", "content": correction_request}]
+            try:
+                async for _ in _run_with_fallback(
+                    channel, context, root_id, priority="low",
+                    can_recover=False, allow_side_effects=False, tool_replay=tool_replay,
+                ):
+                    pass
+                break
+            except BadRequestError as e:
+                if not _is_context_length_exceeded(e) or attempt == 2:
+                    raise
+                # Drop whatever this attempt persisted past root_id before retrying,
+                # so the reconstruction query below can't pick up rows from more than
+                # one attempt.
+                async with pool.connection() as conn:
+                    async with conn.cursor() as cur:
+                        await cur.execute("DELETE FROM messages WHERE session_id = %s AND id > %s", (channel, root_id))
+                        await conn.commit()
+                budget = (budget or SUMMARIZE_TOKEN_BUDGET) // 2
+                turn = _truncate_rows_to_budget(original_turn, budget)
 
         async with pool.connection() as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
