@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { ThumbsUp, ThumbsDown } from '@lucide/svelte';
   import Message from '../components/Message.svelte';
   import { navigate } from '../lib/router.svelte.js';
   import { openAIResponseToParts } from '../lib/messageHistory.js';
@@ -62,7 +63,9 @@
         {#each feedbackList as row (row.id)}
           <div class="entry">
             <div class="entry-meta">
-              <span class="entry-label" class:down={row.label === 'down'}>{row.label === 'up' ? '👍' : '👎'}</span>
+              <span class="entry-label" class:down={row.label === 'down'}>
+                {#if row.label === 'up'}<ThumbsUp size={18} />{:else}<ThumbsDown size={18} />{/if}
+              </span>
               {#if row.note}<span class="entry-note">note: {row.note}</span>{/if}
             </div>
             <div class="entry-messages">
@@ -128,7 +131,24 @@
   }
 
   .entry-label {
+    display: inline-flex;
+    align-items: center;
     font-size: 1rem;
+    color: #2e7d32;
+  }
+
+  .entry-label.down {
+    color: #c0392b;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .entry-label {
+      color: #6fcf74;
+    }
+
+    .entry-label.down {
+      color: #e57373;
+    }
   }
 
   .entry-note {

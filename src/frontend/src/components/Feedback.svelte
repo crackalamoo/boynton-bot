@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
+  import { ThumbsUp, ThumbsDown } from '@lucide/svelte';
   import type { Feedback, OpenAIMessage } from '../lib/types.js';
 
   // Pass `initialFeedback` when the caller already knows this message has feedback
@@ -163,13 +164,13 @@
 
 <div class="feedback" class:idle-fade={uiState === 'idle'}>
   {#if uiState === 'idle'}
-    <button class="fb-btn" onclick={() => submitLabel('up')} disabled={submitting} aria-label="Good response">👍</button>
-    <button class="fb-btn" onclick={() => submitLabel('down')} disabled={submitting} aria-label="Bad response">👎</button>
+    <button class="fb-btn" onclick={() => submitLabel('up')} disabled={submitting} aria-label="Good response"><ThumbsUp size={18} /></button>
+    <button class="fb-btn" onclick={() => submitLabel('down')} disabled={submitting} aria-label="Bad response"><ThumbsDown size={18} /></button>
   {:else if uiState === 'up'}
-    <span class="fb-status">👍 thanks</span>
+    <span class="fb-status"><ThumbsUp size={18} /> thanks</span>
   {:else if uiState === 'noting'}
     <div class="fb-note">
-      <span class="fb-status">👎 what went wrong? (optional)</span>
+      <span class="fb-status"><ThumbsDown size={18} /> what went wrong? (optional)</span>
       <textarea bind:value={noteText} placeholder="e.g. should have checked HN before answering" rows="2"></textarea>
       <div class="fb-note-actions">
         <button class="fb-link-btn" onclick={submitNote} disabled={submitting}>submit &amp; draft correction</button>
@@ -177,10 +178,10 @@
       </div>
     </div>
   {:else if uiState === 'down-pending'}
-    <span class="fb-status">👎 recorded</span>
+    <span class="fb-status"><ThumbsDown size={18} /> recorded</span>
     <button class="fb-link-btn" onclick={() => uiState = 'noting'}>add a note &amp; draft correction</button>
   {:else if uiState === 'drafting'}
-    <span class="fb-status">👎 drafting a correction…</span>
+    <span class="fb-status"><ThumbsDown size={18} /> drafting a correction…</span>
   {:else if uiState === 'reviewing'}
     <div class="fb-review">
       <span class="fb-status">correction drafted — review before it's used for training</span>
@@ -232,18 +233,23 @@
   }
 
   .fb-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     background: none;
-    border: 1px solid var(--button-border);
-    border-radius: 6px;
+    border: none;
+    color: var(--muted-color);
     cursor: pointer;
-    padding: 0.15rem 0.5rem;
-    margin-inline-end: 0.35rem;
-    font-size: 0.85rem;
-    line-height: 1.4;
+    min-width: 0;
+    padding: 0.2rem;
+    margin: 0 0.35rem 0 0;
+    line-height: 1;
+    box-shadow: none;
   }
 
   .fb-btn:hover:not(:disabled) {
-    background: var(--button-bg);
+    background: none;
+    color: var(--text-color);
   }
 
   .fb-btn:disabled {
@@ -252,6 +258,9 @@
   }
 
   .fb-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
     color: var(--muted-color);
     font-style: italic;
   }

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
+  import { MessageSquareText, Settings } from '@lucide/svelte';
   import MessageList from '../components/MessageList.svelte';
   import ChatInput from '../components/ChatInput.svelte';
   import { parseHistory } from '../lib/messageHistory.js';
@@ -249,8 +250,8 @@
       <div class="header-row">
         <h1>Boynton Bot</h1>
         <div class="header-actions">
-          <button class="settings-icon-btn" onclick={() => navigate('/feedback')} aria-label="Feedback" title="Feedback">📝</button>
-          <button class="settings-icon-btn" onclick={() => navigate('/settings')} aria-label="Settings" title="Settings">⚙</button>
+          <button class="settings-icon-btn" onclick={() => navigate('/feedback')} aria-label="Feedback" title="Feedback"><MessageSquareText size={20} /></button>
+          <button class="settings-icon-btn" onclick={() => navigate('/settings')} aria-label="Settings" title="Settings"><Settings size={20} /></button>
         </div>
       </div>
       <hr />
@@ -286,11 +287,12 @@
   }
 
   .settings-icon-btn {
+    display: inline-flex;
+    align-items: center;
     background: none;
     border: none;
     color: var(--muted-color);
     cursor: pointer;
-    font-size: 1.3rem;
     line-height: 1;
     padding: 0.25rem;
   }
