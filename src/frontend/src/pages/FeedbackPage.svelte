@@ -6,9 +6,37 @@
   import { openAIResponseToParts } from '../lib/messageHistory.js';
   import type { FeedbackListItem, Message as MessageType } from '../lib/types.js';
 
+  type FilterKey = 'all' | 'needs-review' | 'needs-retry' | 'in-progress' | 'resolved';
+
+  const FILTERS: { key: FilterKey; label: string }[] = [
+    { key: 'all', label: 'All' },
+    { key: 'needs-review', label: 'Needs review' },
+    { key: 'needs-retry', label: 'Needs retry' },
+    { key: 'in-progress', label: 'In progress' },
+    { key: 'resolved', label: 'Resolved' },
+  ];
+
+  function matchesFilter(row: FeedbackListItem, filter: FilterKey): boolean {
+    switch (filter) {
+      case 'all':
+        return true;
+      case 'needs-review':
+        return row.correction_status === 'drafted';
+      case 'needs-retry':
+        return row.correction_status === 'error' || row.correction_status === 'rejected';
+      case 'in-progress':
+        return row.correction_status === 'pending' || row.correction_status === 'drafting';
+      case 'resolved':
+        return row.correction_status === 'approved' || row.label === 'up';
+    }
+  }
+
   let feedbackList = $state<FeedbackListItem[]>([]);
   let loading = $state(true);
   let errorMsg = $state('');
+  let activeFilter = $state<FilterKey>('all');
+
+  let filteredList = $derived(feedbackList.filter((row) => matchesFilter(row, activeFilter)));
 
   async function load() {
     loading = true;
@@ -52,15 +80,32 @@
     </div>
     <hr />
 
+    {#if !loading && !errorMsg && feedbackList.length > 0}
+      <div class="filter-row">
+        {#each FILTERS as f (f.key)}
+          <button
+            class="filter-pill"
+            class:active={activeFilter === f.key}
+            onclick={() => (activeFilter = f.key)}
+          >
+            {f.label}
+            <span class="filter-count">{feedbackList.filter((row) => matchesFilter(row, f.key)).length}</span>
+          </button>
+        {/each}
+      </div>
+    {/if}
+
     {#if loading}
       <p class="muted">loading feedback…</p>
     {:else if errorMsg}
       <p class="message">{errorMsg}</p>
     {:else if feedbackList.length === 0}
       <p class="muted">No feedback recorded yet.</p>
+    {:else if filteredList.length === 0}
+      <p class="muted">No feedback matches this filter.</p>
     {:else}
       <div class="entries">
-        {#each feedbackList as row (row.id)}
+        {#each filteredList as row (row.id)}
           <div class="entry">
             <div class="entry-meta">
               <span class="entry-label" class:down={row.label === 'down'}>
@@ -102,6 +147,44 @@
 
   .muted {
     color: var(--muted-color);
+  }
+
+  .filter-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-block-end: 1.25rem;
+  }
+
+  .filter-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.8rem;
+    color: var(--muted-color);
+    background: var(--button-bg);
+    border: 1px solid var(--button-border);
+    border-radius: 999px;
+    padding: 0.3rem 0.75rem;
+    cursor: pointer;
+  }
+
+  .filter-pill:hover {
+    color: var(--text-color);
+  }
+
+  .filter-pill.active {
+    color: var(--text-color);
+    border-color: var(--text-color);
+  }
+
+  .filter-count {
+    font-size: 0.75rem;
+    color: var(--muted-color);
+  }
+
+  .filter-pill.active .filter-count {
+    color: var(--text-color);
   }
 
   .message {
