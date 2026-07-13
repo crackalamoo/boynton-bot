@@ -1,7 +1,9 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
   import { ThumbsUp, ThumbsDown } from '@lucide/svelte';
-  import type { Feedback, OpenAIMessage } from '../lib/types.js';
+  import MessageParts from './MessageParts.svelte';
+  import { openAIResponseToParts } from '../lib/messageHistory.js';
+  import type { Feedback, OpenAIMessage, Part } from '../lib/types.js';
 
   // Pass `initialFeedback` when the caller already knows this message has feedback
   // (e.g. the feedback review page, which lists rows that by definition already have
@@ -34,6 +36,29 @@
   );
   let submitting = $state(false);
   let pollHandle: ReturnType<typeof setInterval> | null = null;
+
+  // 'rendered' shows the correction the way it'd actually look in the chat — read-only,
+  // for judging content at a glance. 'raw' is the JSON textarea, the only way to actually
+  // edit a correction for now (an in-place edit UI is a later project).
+  let correctionView = $state<'rendered' | 'raw'>('rendered');
+
+  let correctionParts = $derived.by((): { parts: Part[] } | { error: string } => {
+    if (!correctionText.trim()) return { parts: [] };
+    try {
+      const parsed = JSON.parse(correctionText) as OpenAIMessage[];
+      return { parts: openAIResponseToParts(parsed) };
+    } catch (_) {
+      return { error: 'Correction is not valid JSON — switch to raw view to fix it.' };
+    }
+  });
+
+  function setCorrection(parsed: OpenAIMessage[]) {
+    correctionText = JSON.stringify(parsed, null, 2);
+  }
+
+  function toggleCorrectionView() {
+    correctionView = correctionView === 'raw' ? 'rendered' : 'raw';
+  }
 
   function stateFromFeedback(f: FeedbackData): UiState {
     if (f.label === 'up') return 'up';
@@ -69,8 +94,8 @@
       const f = (await res.json()) as Feedback;
       feedback = f;
       uiState = stateFromFeedback(f);
-      if (f.correction_status === 'drafted') {
-        correctionText = JSON.stringify(f.correction, null, 2);
+      if (f.correction_status === 'drafted' && f.correction) {
+        setCorrection(f.correction);
       }
       if (uiState !== 'drafting') stopPolling();
     }, 3000);
@@ -89,7 +114,7 @@
       feedback = f;
       uiState = stateFromFeedback(f);
       noteText = f.note ?? '';
-      if (f.correction) correctionText = JSON.stringify(f.correction, null, 2);
+      if (f.correction) setCorrection(f.correction);
       if (uiState === 'drafting') startPolling(f.id);
     })();
     return stopPolling;
@@ -184,8 +209,25 @@
     <span class="fb-status"><ThumbsDown size={18} /> drafting a correction…</span>
   {:else if uiState === 'reviewing'}
     <div class="fb-review">
-      <span class="fb-status">correction drafted — review before it's used for training</span>
-      <textarea class="fb-correction" bind:value={correctionText} rows="6"></textarea>
+      <div class="fb-review-header">
+        <span class="fb-status">correction drafted — review before it's used for training</span>
+        <button class="fb-link-btn" onclick={toggleCorrectionView}>
+          {correctionView === 'rendered' ? 'edit raw JSON' : 'show rendered'}
+        </button>
+      </div>
+      {#if correctionView === 'rendered'}
+        <div class="fb-rendered">
+          {#if 'error' in correctionParts}
+            <div class="fb-parse-error">{correctionParts.error}</div>
+          {:else if correctionParts.parts.length === 0}
+            <div class="fb-parse-error">(empty correction)</div>
+          {:else}
+            <MessageParts parts={correctionParts.parts} />
+          {/if}
+        </div>
+      {:else}
+        <textarea class="fb-correction" bind:value={correctionText} rows="6"></textarea>
+      {/if}
       <div class="fb-note-actions">
         <button class="fb-link-btn" onclick={() => resolve('approve')} disabled={submitting}>approve</button>
         <button class="fb-link-btn" onclick={() => resolve('reject')} disabled={submitting}>reject</button>
@@ -271,6 +313,27 @@
     flex-direction: column;
     gap: 0.35rem;
     max-width: 30rem;
+  }
+
+  .fb-review-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.75rem;
+  }
+
+  .fb-rendered {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    border: 1px solid var(--button-border);
+    border-radius: 6px;
+    padding: 0.5rem 0.65rem;
+  }
+
+  .fb-parse-error {
+    color: var(--muted-color);
+    font-style: italic;
   }
 
   .fb-note textarea,

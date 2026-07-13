@@ -36,7 +36,7 @@ export function parseHistory(history: HistoryResponse): Message[] {
       mapped.push({ type: 'user', content: m.content ?? '' });
     } else if (m.role === 'assistant') {
       const asst = ensureAssistant();
-      if (m.content) asst.parts.push({ kind: 'text', content: m.content, hidden: m.hidden });
+      if (m.content?.trim()) asst.parts.push({ kind: 'text', content: m.content, hidden: m.hidden });
       // Every assistant row in this grouped turn overwrites dbId (and isPrimaryModel
       // alongside it), so by the time the group closes (next 'user' row) both hold the
       // values of the *last* row — which is exactly the final, no-tool_calls reply row
@@ -79,7 +79,7 @@ export function openAIResponseToParts(response: OpenAIMessage[]): Part[] {
 
   for (const m of response) {
     if (m.role === 'assistant') {
-      if (typeof m.content === 'string' && m.content) {
+      if (typeof m.content === 'string' && m.content.trim()) {
         parts.push({ kind: 'text', content: m.content });
       }
       const toolCalls = (m.tool_calls as { id: string; function: { name: string; arguments: string } }[] | undefined) ?? [];
@@ -105,4 +105,42 @@ export function openAIResponseToParts(response: OpenAIMessage[]): Part[] {
     }
   }
   return parts;
+}
+
+// Reverse of openAIResponseToParts, for the correction-editing UI (Feedback.svelte) —
+// lets a user edit/remove parts in the rendered view and serialize back to the JSON
+// shape `resolve_feedback` expects. Not a byte-for-byte inverse: the original response
+// may interleave multiple tool_calls into one assistant message before any results come
+// back (a "parallel" tool-call turn); this always emits one assistant+tool message pair
+// per tool_call. Semantically equivalent (same calls, same order, same results) but
+// restructured — reasonable since parts have no record of which calls were originally
+// batched together once a user has added/removed/reordered them.
+export function partsToOpenAIResponse(parts: Part[]): OpenAIMessage[] {
+  const messages: OpenAIMessage[] = [];
+  let pendingText: string[] = [];
+  let callCounter = 0;
+
+  for (const part of parts) {
+    if (part.kind === 'text') {
+      if (part.content) pendingText.push(part.content);
+    } else if (part.kind === 'tool_call') {
+      const id = `call_${callCounter++}`;
+      messages.push({
+        role: 'assistant',
+        content: pendingText.length ? pendingText.join('\n\n') : undefined,
+        tool_calls: [
+          { id, type: 'function', function: { name: part.name, arguments: JSON.stringify(part.arguments ?? {}) } },
+        ],
+      });
+      pendingText = [];
+      messages.push({ role: 'tool', tool_call_id: id, content: part.result ?? '' });
+    }
+    // reasoning parts never appear in this shape (see openAIResponseToParts) — nothing to emit.
+  }
+
+  if (pendingText.length || messages.length === 0) {
+    messages.push({ role: 'assistant', content: pendingText.join('\n\n') });
+  }
+
+  return messages;
 }
