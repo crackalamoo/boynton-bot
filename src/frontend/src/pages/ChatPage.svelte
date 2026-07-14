@@ -5,7 +5,6 @@
   import ChatInput from '../components/ChatInput.svelte';
   import { parseHistory } from '../lib/messageHistory.js';
   import { navigate } from '../lib/router.svelte.js';
-  import { uiPrefs } from '../lib/uiPrefs.svelte.js';
   import type { Message, SSEEvent } from '../lib/types.js';
 
   const isMobile = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches;
@@ -31,7 +30,7 @@
 
   async function loadHistory() {
     try {
-      const res = await fetch('/api/history?include_hidden=true');
+      const res = await fetch('/api/history');
       if (res.ok) {
         const history = await res.json();
         messages = parseHistory(history);
@@ -46,7 +45,7 @@
     if (loadingOlderHistory || !hasMoreHistory || oldestLoadedUserRowId === null) return;
     loadingOlderHistory = true;
     try {
-      const res = await fetch(`/api/history?include_hidden=true&before_id=${oldestLoadedUserRowId}`);
+      const res = await fetch(`/api/history?before_id=${oldestLoadedUserRowId}`);
       if (res.ok) {
         const history = await res.json();
         let olderMessages = parseHistory(history);
@@ -257,7 +256,7 @@
       <hr />
     </div>
     <div bind:this={topSentinel}></div>
-    <MessageList {messages} showHidden={uiPrefs.showHidden} />
+    <MessageList {messages} />
     <ChatInput {compacting} {isMobile} onsend={sendMessage} onclear={clearConversation} oncompact={compactConversation} />
   </article>
 </div>

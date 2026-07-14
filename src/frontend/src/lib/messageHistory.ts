@@ -6,7 +6,6 @@ interface RawMessage {
   content?: string;
   tool_name?: string;
   arguments?: Record<string, unknown>;
-  hidden?: boolean;
   created_at?: string;
   is_primary_model?: boolean;
 }
@@ -36,7 +35,7 @@ export function parseHistory(history: HistoryResponse): Message[] {
       mapped.push({ type: 'user', content: m.content ?? '' });
     } else if (m.role === 'assistant') {
       const asst = ensureAssistant();
-      if (m.content?.trim()) asst.parts.push({ kind: 'text', content: m.content, hidden: m.hidden });
+      if (m.content?.trim()) asst.parts.push({ kind: 'text', content: m.content });
       // Every assistant row in this grouped turn overwrites dbId (and isPrimaryModel
       // alongside it), so by the time the group closes (next 'user' row) both hold the
       // values of the *last* row — which is exactly the final, no-tool_calls reply row
@@ -45,7 +44,7 @@ export function parseHistory(history: HistoryResponse): Message[] {
       asst.isPrimaryModel = m.is_primary_model ?? false;
     } else if (m.role === 'tool_call') {
       const asst = ensureAssistant();
-      asst.parts.push({ kind: 'tool_call', name: m.tool_name ?? '', arguments: m.arguments ?? {}, result: null, hidden: m.hidden });
+      asst.parts.push({ kind: 'tool_call', name: m.tool_name ?? '', arguments: m.arguments ?? {}, result: null });
     } else if (m.role === 'tool_result') {
       const asst = ensureAssistant();
       const pending = asst.parts.findLastIndex((p: Part) => p.kind === 'tool_call' && p.result === null);

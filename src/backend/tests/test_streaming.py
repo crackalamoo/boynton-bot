@@ -144,8 +144,8 @@ async def test_compact_returns_false_when_no_messages(channel):
 
 
 async def test_compact_summarizes_and_returns_true(channel):
-    await _persist_op(channel, {"op": "user_msg", "content": "hello", "hidden": False})
-    await _persist_op(channel, {"op": "assistant_msg", "content": "hi there", "hidden": False})
+    await _persist_op(channel, {"op": "user_msg", "content": "hello"})
+    await _persist_op(channel, {"op": "assistant_msg", "content": "hi there"})
 
     with patch("backend.agent._complete", AsyncMock(return_value="conversation summary")):
         result = await _compact(channel)

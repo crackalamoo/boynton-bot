@@ -25,6 +25,7 @@ _BOYNTON_MIGRATION_FILES = [
     "0005_add_training_examples.sql",
     "0006_add_message_model.sql",
     "0007_training_examples_survive_clear.sql",
+    "0008_drop_hidden_flag.sql",
 ]
 
 

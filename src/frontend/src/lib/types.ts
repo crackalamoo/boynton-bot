@@ -1,12 +1,11 @@
-export type TextPart = { kind: 'text'; content: string; hidden?: boolean };
+export type TextPart = { kind: 'text'; content: string };
 export type ToolCallPart = {
   kind: 'tool_call';
   name: string;
   arguments: Record<string, unknown>;
   result: string | null;
-  hidden?: boolean;
 };
-export type ReasoningPart = { kind: 'reasoning'; content: string; hidden?: boolean };
+export type ReasoningPart = { kind: 'reasoning'; content: string };
 export type Part = TextPart | ToolCallPart | ReasoningPart;
 
 export type UserMessage = { type: 'user'; content: string; id?: number; queued?: boolean };

@@ -2,7 +2,7 @@
   import Message from './Message.svelte';
   import type { Message as MessageType } from '../lib/types.js';
 
-  let { messages, showHidden }: { messages: MessageType[]; showHidden: boolean } = $props();
+  let { messages }: { messages: MessageType[] } = $props();
 
   let expandedDividers: Set<string> = $state(new Set());
 
@@ -18,26 +18,10 @@
     }
     expandedDividers = new Set(expandedDividers);
   }
-
-  function visibleMessages(msgs: MessageType[]): MessageType[] {
-    if (showHidden) return msgs;
-    return msgs.filter((msg) => {
-      if (msg.type !== 'assistant') return true;
-      const originalParts = msg.parts;
-      if (originalParts.length === 0) return true;
-      const filteredParts = originalParts.filter((part) => !part.hidden);
-      return !(originalParts.length > 0 && filteredParts.length === 0);
-    });
-  }
-
-  function visibleParts(msg: MessageType): MessageType {
-    if (showHidden || msg.type !== 'assistant') return msg;
-    return { ...msg, parts: msg.parts.filter((part) => !part.hidden) };
-  }
 </script>
 
 <div id="messages">
-  {#each visibleMessages(messages) as msg, i}
+  {#each messages as msg, i}
     {#if msg.type === 'divider'}
       {@const key = dividerKey(msg, i)}
       <div
@@ -53,7 +37,7 @@
         <div class="summary-text">{msg.summary}</div>
       {/if}
     {:else}
-      <Message msg={visibleParts(msg)} {showHidden} />
+      <Message msg={msg} />
     {/if}
   {/each}
 </div>

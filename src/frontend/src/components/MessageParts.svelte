@@ -5,16 +5,16 @@
 
   marked.setOptions({ breaks: true });
 
-  let { parts, showHidden = false }: { parts: Part[]; showHidden?: boolean } = $props();
+  let { parts }: { parts: Part[] } = $props();
 </script>
 
 {#each parts as part}
   {#if part.kind === 'text'}
-    <div class="msg-content markdown" class:hidden-part={showHidden && part.hidden}>{@html marked(part.content)}</div>
+    <div class="msg-content markdown">{@html marked(part.content)}</div>
   {:else if part.kind === 'tool_call'}
-    <ToolCall {part} {showHidden} />
+    <ToolCall {part} />
   {:else if part.kind === 'reasoning'}
-    <div class="thinking reasoning-trace" class:hidden-part={showHidden && part.hidden}>{part.content}</div>
+    <div class="thinking reasoning-trace">{part.content}</div>
   {/if}
 {/each}
 
@@ -72,10 +72,5 @@
 
   .reasoning-trace {
     white-space: pre-wrap;
-  }
-
-  .hidden-part {
-    color: var(--muted-color);
-    opacity: 0.7;
   }
 </style>

@@ -7,9 +7,8 @@
   // feedback review page) pass it straight through, so <Feedback> never renders its
   // idle thumbs-up/down default for a message that's guaranteed to already have real
   // feedback recorded.
-  let { msg, showHidden = false, feedbackData }: {
+  let { msg, feedbackData }: {
     msg: Message;
-    showHidden?: boolean;
     feedbackData?: Omit<FeedbackType, 'prompt'>;
   } = $props();
 </script>
@@ -20,7 +19,7 @@
     {#if !msg.parts || msg.parts.length === 0}
       <div class="thinking">thinking…</div>
     {:else}
-      <MessageParts parts={msg.parts} {showHidden} />
+      <MessageParts parts={msg.parts} />
       {@const lastPart = msg.parts[msg.parts.length - 1]}
       {#if lastPart.kind === 'tool_call' && lastPart.result !== null}
         <div class="thinking">thinking…</div>

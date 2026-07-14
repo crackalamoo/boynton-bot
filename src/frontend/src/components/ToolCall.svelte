@@ -1,10 +1,10 @@
 <script lang="ts">
   import type { ToolCallPart } from '../lib/types.js';
 
-  let { part, showHidden = false }: { part: ToolCallPart; showHidden?: boolean } = $props();
+  let { part }: { part: ToolCallPart } = $props();
 </script>
 
-<details class="tool-call" class:hidden-part={showHidden && part.hidden}>
+<details class="tool-call">
   <summary class="tool-call-header">
     <span class="tool-call-status">{part.result === null ? 'Using' : 'Used'}</span>
     {part.name.replaceAll('_', ' ')}
@@ -71,10 +71,5 @@
     color: var(--muted-color);
     font-style: italic;
     border-top: 1px solid var(--button-border);
-  }
-
-  .hidden-part {
-    color: var(--muted-color);
-    opacity: 0.7;
   }
 </style>

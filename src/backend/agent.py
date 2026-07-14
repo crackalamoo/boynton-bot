@@ -199,13 +199,13 @@ _MESSAGE_COLUMNS = "id, role, content, tool_name, arguments, created_at"
 
 
 async def _fetch_messages_since(cur, channel: str, since, before_id: int | None = None) -> list[dict[str, Any]]:
-    """Fetch NOT hidden messages for a channel, oldest first.
+    """Fetch messages for a channel, oldest first.
 
     `since` restricts to created_at > since (pass the session's summary_created_at,
     or None for "from the beginning"). `before_id` additionally restricts to id <
     before_id (pass a turn's starting message id to exclude that turn onward).
     """
-    query = f"SELECT {_MESSAGE_COLUMNS} FROM messages WHERE session_id = %s AND NOT hidden"
+    query = f"SELECT {_MESSAGE_COLUMNS} FROM messages WHERE session_id = %s"
     params: list[Any] = [channel]
     if since:
         query += " AND created_at > %s"
@@ -392,14 +392,14 @@ async def build_training_example(message_id: int) -> dict[str, Any]:
             if session["summary_created_at"]:
                 await cur.execute(
                     """SELECT role, content, tool_name, arguments FROM messages
-                       WHERE session_id = %s AND created_at > %s AND id <= %s AND NOT hidden
+                       WHERE session_id = %s AND created_at > %s AND id <= %s
                        ORDER BY id ASC""",
                     (channel, session["summary_created_at"], preceding_user_id),
                 )
             else:
                 await cur.execute(
                     """SELECT role, content, tool_name, arguments FROM messages
-                       WHERE session_id = %s AND id <= %s AND NOT hidden
+                       WHERE session_id = %s AND id <= %s
                        ORDER BY id ASC""",
                     (channel, preceding_user_id),
                 )
@@ -407,7 +407,7 @@ async def build_training_example(message_id: int) -> dict[str, Any]:
 
             await cur.execute(
                 """SELECT role, content, tool_name, arguments FROM messages
-                   WHERE session_id = %s AND id > %s AND id <= %s AND NOT hidden
+                   WHERE session_id = %s AND id > %s AND id <= %s
                    ORDER BY id ASC""",
                 (channel, preceding_user_id, message_id),
             )
@@ -588,8 +588,7 @@ async def _execute(
         # a "length" round can still carry a complete, valid tool call alongside
         # trailing text that got cut off elsewhere. Validity is judged per call.
         if tool_calls:
-            # Assistant messages that carry tool_calls are never hidden.
-            await _persist_op(channel, {"op": "assistant_msg", "content": text, "hidden": False, "model": model})
+            await _persist_op(channel, {"op": "assistant_msg", "content": text, "model": model})
 
             assistant_msg: dict[str, Any] = {"role": "assistant", "content": text}
             assistant_msg["tool_calls"] = [
@@ -639,7 +638,7 @@ async def _execute(
             tool_called = True
             continue
 
-        final_message_id = await _persist_op(channel, {"op": "assistant_msg", "content": text, "hidden": False, "model": model})
+        final_message_id = await _persist_op(channel, {"op": "assistant_msg", "content": text, "model": model})
         break
 
     yield "data: " + json.dumps({
@@ -734,7 +733,7 @@ async def _execute_with_fallback(
     context, did_summarize = await _build_context(client0, model0, channel, user_message)
 
     await _persist_op(channel, {"op": "ensure_session", "channel": channel})
-    turn_start_id = await _persist_op(channel, {"op": "user_msg", "content": user_message, "hidden": False})
+    turn_start_id = await _persist_op(channel, {"op": "user_msg", "content": user_message})
 
     # context_length_exceeded is recovered from inside _execute itself (compacting
     # prior turns, then truncating the active turn if that's still not enough) —
@@ -786,8 +785,8 @@ async def _persist_op(channel: str, write: dict[str, Any]) -> int | None:
 
     Op shapes:
       {"op": "ensure_session", "channel": channel}
-      {"op": "user_msg", "content": "...", "hidden": bool}
-      {"op": "assistant_msg", "content": "...", "hidden": bool, "model": str | None}
+      {"op": "user_msg", "content": "..."}
+      {"op": "assistant_msg", "content": "...", "model": str | None}
       {"op": "tool_call", "tool_name": "...", "arguments": {...}, "model": str | None}   # arguments is dict
       {"op": "tool_result", "tool_name": "...", "content": "..."}
 
@@ -812,22 +811,22 @@ async def _persist_op(channel: str, write: dict[str, Any]) -> int | None:
                 return None
             elif op == "user_msg":
                 await cur.execute(
-                    "INSERT INTO messages (session_id, role, content, hidden) VALUES (%s, %s, %s, %s) RETURNING id",
-                    (channel, "user", write["content"], write["hidden"])
+                    "INSERT INTO messages (session_id, role, content) VALUES (%s, %s, %s) RETURNING id",
+                    (channel, "user", write["content"])
                 )
             elif op == "assistant_msg":
                 await cur.execute(
-                    "INSERT INTO messages (session_id, role, content, hidden, model) VALUES (%s, %s, %s, %s, %s) RETURNING id",
-                    (channel, "assistant", write["content"], write["hidden"], write.get("model"))
+                    "INSERT INTO messages (session_id, role, content, model) VALUES (%s, %s, %s, %s) RETURNING id",
+                    (channel, "assistant", write["content"], write.get("model"))
                 )
             elif op == "tool_call":
                 await cur.execute(
-                    "INSERT INTO messages (session_id, role, tool_name, arguments, hidden, model) VALUES (%s, %s, %s, %s::jsonb, FALSE, %s) RETURNING id",
+                    "INSERT INTO messages (session_id, role, tool_name, arguments, model) VALUES (%s, %s, %s, %s::jsonb, %s) RETURNING id",
                     (channel, "tool_call", write["tool_name"], json.dumps(write["arguments"]), write.get("model"))
                 )
             elif op == "tool_result":
                 await cur.execute(
-                    "INSERT INTO messages (session_id, role, tool_name, content, hidden) VALUES (%s, %s, %s, %s, FALSE) RETURNING id",
+                    "INSERT INTO messages (session_id, role, tool_name, content) VALUES (%s, %s, %s, %s) RETURNING id",
                     (channel, "tool_result", write["tool_name"], write["content"])
                 )
             else:
@@ -908,7 +907,7 @@ async def _draft_correction(example_id: int) -> None:
 
     try:
         await _persist_op(channel, {"op": "ensure_session", "channel": channel})
-        root_id = await _persist_op(channel, {"op": "user_msg", "content": correction_request, "hidden": False})
+        root_id = await _persist_op(channel, {"op": "user_msg", "content": correction_request})
 
         # The stored prompt was under budget when the original turn ran, but that's no
         # guarantee prompt+response+correction_request still is. Unlike the normal chat
@@ -987,7 +986,6 @@ class Agent:
     async def get_history(
         self,
         channel: str,
-        include_hidden: bool = False,
         before_id: int | None = None,
         limit: int = 20,
     ) -> dict[str, Any]:
@@ -1000,7 +998,6 @@ class Agent:
 
                 summary_created_at = session["summary_created_at"]
 
-                hidden_clause = "" if include_hidden else "AND NOT hidden"
                 before_clause = "AND id < %s" if before_id is not None else ""
                 # Page starts must land exactly on a role='user' row so that a turn (user +
                 # its assistant/tool_call/tool_result rows) is never split across a page
@@ -1008,7 +1005,7 @@ class Agent:
                 # fragmented one from two separately-fetched pages.
                 cursor_params: tuple[Any, ...] = (channel, before_id) if before_id is not None else (channel,)
                 await cur.execute(
-                    f"SELECT id FROM messages WHERE session_id = %s {hidden_clause} {before_clause} "
+                    f"SELECT id FROM messages WHERE session_id = %s {before_clause} "
                     f"AND role = 'user' ORDER BY id DESC LIMIT %s",
                     (*cursor_params, limit),
                 )
@@ -1025,8 +1022,8 @@ class Agent:
                 page_start_id = user_row_ids[-1]
 
                 await cur.execute(
-                    f"SELECT id FROM messages WHERE session_id = %s {hidden_clause} "
-                    f"AND role = 'user' AND id < %s LIMIT 1",
+                    "SELECT id FROM messages WHERE session_id = %s "
+                    "AND role = 'user' AND id < %s LIMIT 1",
                     (channel, page_start_id),
                 )
                 has_more = await cur.fetchone() is not None
@@ -1034,8 +1031,8 @@ class Agent:
                 upper_bound_clause = "AND id < %s" if before_id is not None else ""
                 upper_bound_params: tuple[Any, ...] = (before_id,) if before_id is not None else ()
                 await cur.execute(
-                    f"SELECT id, role, content, tool_name, arguments, hidden, created_at, model FROM messages "
-                    f"WHERE session_id = %s {hidden_clause} AND id >= %s {upper_bound_clause} ORDER BY id ASC",
+                    f"SELECT id, role, content, tool_name, arguments, created_at, model FROM messages "
+                    f"WHERE session_id = %s AND id >= %s {upper_bound_clause} ORDER BY id ASC",
                     (channel, page_start_id, *upper_bound_params)
                 )
                 rows = await cur.fetchall()
@@ -1047,7 +1044,6 @@ class Agent:
                         "content": r["content"],
                         "tool_name": r["tool_name"],
                         "arguments": r["arguments"],
-                        "hidden": r["hidden"],
                         "created_at": r["created_at"].isoformat(),
                         "is_primary_model": PRIMARY_MODEL is not None and r["model"] == PRIMARY_MODEL,
                     }

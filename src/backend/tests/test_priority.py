@@ -87,9 +87,9 @@ async def test_interactive_chat_defaults_to_high_priority(channel):
 async def test_draft_correction_uses_low_priority(agent, channel):
     from backend.agent import PRIMARY_MODEL
 
-    await _persist_op(channel, {"op": "user_msg", "content": "what's the weather", "hidden": False})
+    await _persist_op(channel, {"op": "user_msg", "content": "what's the weather"})
     reply_id = await _persist_op(
-        channel, {"op": "assistant_msg", "content": "it's sunny", "hidden": False, "model": PRIMARY_MODEL}
+        channel, {"op": "assistant_msg", "content": "it's sunny", "model": PRIMARY_MODEL}
     )
     row = await agent.record_feedback(reply_id, "down")
 

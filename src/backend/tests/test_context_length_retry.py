@@ -85,8 +85,8 @@ def test_context_length_overage_returns_none_for_missing_body():
 async def test_context_length_exceeded_triggers_compact_and_retry(channel):
     """First call to _stream_round raises context_length_exceeded; boynton-bot
     should force a compaction and retry the turn once, succeeding."""
-    await _persist_op(channel, {"op": "user_msg", "content": "old backlog", "hidden": False})
-    await _persist_op(channel, {"op": "assistant_msg", "content": "old reply", "hidden": False})
+    await _persist_op(channel, {"op": "user_msg", "content": "old backlog"})
+    await _persist_op(channel, {"op": "assistant_msg", "content": "old reply"})
 
     calls = {"n": 0}
     retry_contexts: list[list] = []
@@ -144,8 +144,8 @@ async def test_context_length_exceeded_after_a_tool_call_keeps_the_active_turn_i
     """Rejection on a later round (after a tool call already ran this turn) must
     compact only prior turns — the active turn's own tool exchange should survive
     intact in the retried context, not get folded into the lossy summary too."""
-    await _persist_op(channel, {"op": "user_msg", "content": "old backlog", "hidden": False})
-    await _persist_op(channel, {"op": "assistant_msg", "content": "old reply", "hidden": False})
+    await _persist_op(channel, {"op": "user_msg", "content": "old backlog"})
+    await _persist_op(channel, {"op": "assistant_msg", "content": "old reply"})
 
     calls = {"n": 0}
     retry_contexts: list[list] = []
@@ -282,11 +282,11 @@ async def test_compact_survives_a_single_oversized_message(channel):
     """A single huge tool result (bigger than the hard prompt ceiling on its own)
     must not stop compaction from succeeding — see boynton-bot.log incident where
     one 32k-char tool_result made every subsequent compact attempt fail forever."""
-    await _persist_op(channel, {"op": "user_msg", "content": "fetch that page", "hidden": False})
+    await _persist_op(channel, {"op": "user_msg", "content": "fetch that page"})
     huge_tool_result = "y" * (CHAR_BUDGET + 20_000)  # bigger than the summarization budget on its own
     await _persist_op(
         channel,
-        {"op": "tool_result", "tool_name": "web_fetch", "content": huge_tool_result, "hidden": False},
+        {"op": "tool_result", "tool_name": "web_fetch", "content": huge_tool_result},
     )
 
     captured_prompt = {}

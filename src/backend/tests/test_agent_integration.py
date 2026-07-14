@@ -10,8 +10,8 @@ async def channel():
 
 
 async def test_build_context_appends_new_user_message(channel):
-    await _persist_op(channel, {"op": "user_msg", "content": "hello", "hidden": False})
-    await _persist_op(channel, {"op": "assistant_msg", "content": "hi there", "hidden": False})
+    await _persist_op(channel, {"op": "user_msg", "content": "hello"})
+    await _persist_op(channel, {"op": "assistant_msg", "content": "hi there"})
 
     context, _ = await _build_context(None, None, channel, "follow-up question")
 
@@ -19,11 +19,11 @@ async def test_build_context_appends_new_user_message(channel):
 
 
 async def test_tool_call_pairs_with_result(channel):
-    await _persist_op(channel, {"op": "user_msg", "content": "run ls", "hidden": False})
-    await _persist_op(channel, {"op": "assistant_msg", "content": "", "hidden": False})
+    await _persist_op(channel, {"op": "user_msg", "content": "run ls"})
+    await _persist_op(channel, {"op": "assistant_msg", "content": ""})
     await _persist_op(channel, {"op": "tool_call", "tool_name": "bash", "arguments": {"command": "ls"}})
     await _persist_op(channel, {"op": "tool_result", "tool_name": "bash", "content": "file.txt"})
-    await _persist_op(channel, {"op": "assistant_msg", "content": "Done", "hidden": False})
+    await _persist_op(channel, {"op": "assistant_msg", "content": "Done"})
 
     context, _ = await _build_context(None, None, channel, "next message")
 
@@ -36,13 +36,13 @@ async def test_tool_call_pairs_with_result(channel):
 
 
 async def test_multiple_tool_calls_in_one_round_all_pair(channel):
-    await _persist_op(channel, {"op": "user_msg", "content": "do stuff", "hidden": False})
-    await _persist_op(channel, {"op": "assistant_msg", "content": "", "hidden": False})
+    await _persist_op(channel, {"op": "user_msg", "content": "do stuff"})
+    await _persist_op(channel, {"op": "assistant_msg", "content": ""})
     await _persist_op(channel, {"op": "tool_call", "tool_name": "bash", "arguments": {"command": "ls"}})
     await _persist_op(channel, {"op": "tool_call", "tool_name": "bash", "arguments": {"command": "pwd"}})
     await _persist_op(channel, {"op": "tool_result", "tool_name": "bash", "content": "result_ls"})
     await _persist_op(channel, {"op": "tool_result", "tool_name": "bash", "content": "result_pwd"})
-    await _persist_op(channel, {"op": "assistant_msg", "content": "Done", "hidden": False})
+    await _persist_op(channel, {"op": "assistant_msg", "content": "Done"})
 
     context, _ = await _build_context(None, None, channel, "next")
 
