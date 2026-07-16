@@ -61,6 +61,13 @@ async def _complete(client: AsyncOpenAI, model: str, messages: list[dict[str, An
     return response.choices[0].message.content or ""
 
 
+# Tight, well under qwen's own hard ceiling (50,000) — asks qwen to reject early
+# and cleanly if summarization has fallen behind, rather than risk the hard
+# ceiling. Not sent on the summarization call itself (see _do_summarize), which
+# needs to see the full unsummarized backlog.
+NORMAL_MAX_PROMPT_TOKENS = 40_000
+
+
 async def _stream_round(
     client: AsyncOpenAI,
     model: str,
@@ -68,6 +75,7 @@ async def _stream_round(
     tools=None,
     max_tokens: int | None = None,
     priority: str = "high",
+    max_prompt_tokens: int | None = NORMAL_MAX_PROMPT_TOKENS,
 ) -> AsyncGenerator[tuple[str, Any], None]:
     """Stream one completion round.
 
@@ -84,10 +92,10 @@ async def _stream_round(
     if tools:
         kwargs["tools"] = tools
     if model == PRIMARY_MODEL and PRIMARY_MODEL is not None:
-        kwargs["extra_headers"] = {
-            "X-Priority": priority,
-            "X-Max-Prompt-Tokens": str(NORMAL_MAX_PROMPT_TOKENS),
-        }
+        headers = {"X-Priority": priority}
+        if max_prompt_tokens is not None:
+            headers["X-Max-Prompt-Tokens"] = str(max_prompt_tokens)
+        kwargs["extra_headers"] = headers
     accumulated_content = ""
     accumulated_tool_calls: dict[int, dict[str, str]] = {}
     finish_reason = "stop"
@@ -122,12 +130,6 @@ async def _stream_round(
 MEMORY_DIR = os.environ["BOYNTON_MEMORY_DIR"]  # required — filesystem path to memory files
 SUMMARIZATION_THRESHOLD = 50_000  # tokens (approximate)
 MAX_TOOL_ROUNDS = 15
-
-# Tight, well under qwen's own hard ceiling (50,000) — asks qwen to reject early
-# and cleanly if summarization has fallen behind, rather than risk the hard
-# ceiling. Not sent on the summarization call itself (see _do_summarize), which
-# needs to see the full unsummarized backlog.
-NORMAL_MAX_PROMPT_TOKENS = 40_000
 
 # Conservative — some content (JSON/structured tool output) tokenizes much
 # denser than English prose. A real incident measured ~2.7 chars/token for a
@@ -521,6 +523,7 @@ async def _execute(
     can_recover: bool = True,
     allow_side_effects: bool = True,
     tool_replay: dict[tuple[str, str], str] | None = None,
+    max_prompt_tokens: int | None = NORMAL_MAX_PROMPT_TOKENS,
 ) -> AsyncGenerator[str, None]:
     """LLM + tool loop generator.
 
@@ -545,6 +548,12 @@ async def _execute(
       drafting so an identical tool call (e.g. re-checking the same URL) reflects what
       was actually seen originally rather than results drifting if the world changed
       since, or a side-effecting tool running twice.
+    - `max_prompt_tokens` is forwarded to _stream_round on every round — see its
+      docstring. Correction drafting passes None (no client-side cap, just the
+      server's hard ceiling) since it has no mid-turn recovery (can_recover=False
+      above) to fall back on if a live tool call's result pushes it over budget, and
+      the default 40k margin exists for interactive chat's summarization headroom,
+      which doesn't apply to a one-shot background drafting turn.
     - Runs the full LLM + tool loop, persisting every op immediately via `_persist_op`
       as it happens (assistant messages, tool calls, tool results).
     - Yields SSE strings live as events happen.
@@ -561,7 +570,10 @@ async def _execute(
         tool_calls = []
         finish_reason = "stop"
         try:
-            async for kind, value in _stream_round(client, model, tool_context, tools=tools, max_tokens=max_tokens, priority=priority):
+            async for kind, value in _stream_round(
+                client, model, tool_context, tools=tools, max_tokens=max_tokens,
+                priority=priority, max_prompt_tokens=max_prompt_tokens,
+            ):
                 if kind == "token":
                     round_content.append(value)
                     yield "data: " + json.dumps({"type": "token", "content": value}) + "\n\n"
@@ -657,6 +669,7 @@ async def _run_with_fallback(
     can_recover: bool = True,
     allow_side_effects: bool = True,
     tool_replay: dict[tuple[str, str], str] | None = None,
+    max_prompt_tokens: int | None = NORMAL_MAX_PROMPT_TOKENS,
 ) -> AsyncGenerator[str, None]:
     """Run `_execute` over `CLIENTS` in order, falling back to the next client on a
     connection error that happened before anything was committed for this turn.
@@ -667,6 +680,7 @@ async def _run_with_fallback(
             client, model, channel, context, did_summarize, turn_start_id,
             max_tokens=max_tokens, priority=priority, can_recover=can_recover,
             allow_side_effects=allow_side_effects, tool_replay=tool_replay,
+            max_prompt_tokens=max_prompt_tokens,
         )
         committed = False
         try:
@@ -881,10 +895,13 @@ async def _draft_correction(example_id: int) -> None:
     is stubbed rather than actually performed (see registry.SIDE_EFFECTING_TOOLS) —
     this is drafting a training example, not a live user request.
 
-    Feeds the original prompt, the original (bad) response, and the user's note, then
-    asks for a corrected turn. Writes the result back as `correction` with
-    `correction_status = 'drafted'` on success, or `correction_status = 'error'` if the
-    drafting turn itself fails — never leaves the row stuck on 'drafting'.
+    `correction` is stored in the same shape as `response` for a DPO export,
+    which pairs (prompt, correction) as the chosen completion
+    against (prompt, response) as rejected — both scored under the same `prompt`.
+    The original (bad) response is deliberately left OUT of the drafting context entirely.
+    The model only sees `prompt` plus the user's note, appended as a trailing user
+    message asking it to answer the original request directly, incorporating the
+    note, without acknowledging that this is a correction.
     """
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
@@ -895,39 +912,46 @@ async def _draft_correction(example_id: int) -> None:
         return
 
     channel = f"training-correction-{example_id}"
-    correction_request = (
-        "The response above was marked as incorrect by the user. "
-        f"Their note on what was wrong: {row['note']}\n\n"
-        "Produce a corrected response. Actually call tools for real if the correction "
-        "requires it (e.g. re-fetching a page to get accurate information), then give "
-        "an accurate final answer."
+    correction_guidance = (
+        "Guidance for answering the request above, based on a note about what went "
+        f"wrong on a previous attempt at it: {row['note']}\n\n"
+        "Answer the request directly, incorporating this guidance. Call tools for "
+        "real where needed (e.g. re-fetching a page to get accurate information) "
+        "rather than assuming prior results still hold. Do not mention this "
+        "note, reference a previous attempt, or mention that this is a revision — "
+        "just give the answer as you would if this were the first time it was asked."
     )
-    original_turn = list(row["prompt"]) + list(row["response"])
-    tool_replay = _build_tool_replay(original_turn)
+    original_prompt = list(row["prompt"])
+    tool_replay = _build_tool_replay(original_prompt + list(row["response"]))
 
     try:
         await _persist_op(channel, {"op": "ensure_session", "channel": channel})
-        root_id = await _persist_op(channel, {"op": "user_msg", "content": correction_request})
+        # DB bookkeeping anchor only (the `user_msg` op is the only message-inserting
+        # op with no bad-response content, so its role in the DB doesn't need to match
+        # what's actually sent to the model below) — used to find where this drafting
+        # turn's own rows start when reconstructing `correction` further down.
+        root_id = await _persist_op(channel, {"op": "user_msg", "content": correction_guidance})
 
         # The stored prompt was under budget when the original turn ran, but that's no
-        # guarantee prompt+response+correction_request still is. Unlike the normal chat
-        # path, this context can't lean on mid-turn recovery (see can_recover=False
-        # below) since it's synthetic and not reflected in the DB — so a
-        # context_length_exceeded here is handled locally instead: retry with
-        # progressively tighter truncation of the original turn, bounded (not
-        # open-ended) the same way mid-turn recovery is. A char-based token estimate
-        # is unreliable for link/JSON-dense content (see CHARS_PER_TOKEN_ESTIMATE), so
-        # this doesn't try to precompute the right budget up front — it backs off on an
-        # actual overflow, by the real reported overage (plus a cushion) rather than an
-        # arbitrary fraction, so one retry is usually enough.
+        # guarantee prompt+guidance still is. Unlike the normal chat path, this context
+        # can't lean on mid-turn recovery (see can_recover=False below) since it's
+        # synthetic and not reflected in the DB — so a context_length_exceeded here is
+        # handled locally instead: retry with progressively tighter truncation of the
+        # original prompt, bounded (not open-ended) the same way mid-turn recovery is.
+        # A char-based token estimate is unreliable for link/JSON-dense content (see
+        # CHARS_PER_TOKEN_ESTIMATE), so this doesn't try to precompute the right budget
+        # up front — it backs off on an actual overflow, by the real reported overage
+        # (plus a cushion) rather than an arbitrary fraction, so one retry is usually
+        # enough.
         budget: int | None = None
-        turn = original_turn
+        turn = original_prompt
         for attempt in range(3):
-            context = turn + [{"role": "user", "content": correction_request}]
+            context = turn + [{"role": "user", "content": correction_guidance}]
             try:
                 async for _ in _run_with_fallback(
                     channel, context, root_id, priority="low",
                     can_recover=False, allow_side_effects=False, tool_replay=tool_replay,
+                    max_prompt_tokens=None,
                 ):
                     pass
                 break
@@ -944,7 +968,7 @@ async def _draft_correction(example_id: int) -> None:
                 overage = _context_length_overage(e)
                 current_budget = budget if budget is not None else _estimate_tokens(turn)
                 budget = current_budget - (overage + CONTEXT_LENGTH_OVERAGE_MARGIN) if overage is not None else current_budget // 2
-                turn = _truncate_rows_to_budget(original_turn, budget)
+                turn = _truncate_rows_to_budget(original_prompt, budget)
 
         async with pool.connection() as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
@@ -954,9 +978,9 @@ async def _draft_correction(example_id: int) -> None:
                     (channel, root_id),
                 )
                 correction_rows = await cur.fetchall()
-        # `correction` is stored in the same shape as `response` (design decision #7),
-        # which continues the prompt's tool_call id counter rather than restarting at
-        # 0 — otherwise `prompt + correction` (as used for a future DPO export, mirroring
+        # `correction` is stored in the same shape as `response`, which continues the
+        # prompt's tool_call id counter rather than restarting at 0 — otherwise
+        # `prompt + correction` (as used for a future DPO export, mirroring
         # `prompt + response`) could mint colliding ids if both contain tool calls.
         start_counter = sum(len(m.get("tool_calls") or []) for m in row["prompt"])
         correction, _ = _reconstruct_messages(correction_rows, start_counter=start_counter)
