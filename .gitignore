@@ -26,5 +26,8 @@ boynton-bot-daemon.plist
 # Memory files (personal, lives outside the repo)
 memory/
 
+# Generated training-data exports (private, not tracked)
+exports/
+
 # Docker sandbox home directory (persistent storage, not tracked)
 docker/home/
